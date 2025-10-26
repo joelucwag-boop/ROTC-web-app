@@ -1,4 +1,4 @@
-import os, json, re, io, datetime as dt
+fimport os, json, re, io, datetime as dt
 from functools import wraps
 from flask import Flask, request, jsonify, render_template_string
 from attendance import list_events, read_event_records, leaderboard, list_roster, add_event_and_mark
@@ -125,6 +125,11 @@ def api_att_leaderboard():
     d2 = dt.datetime.strptime(dto,"%m/%d/%Y").date() if dto else None
     data = leaderboard(label, d1, d2, top=int(request.args.get("top","50")))
     return jsonify(ok=True, **data)
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")), debug=os.getenv("FLASK_ENV")=="development")
