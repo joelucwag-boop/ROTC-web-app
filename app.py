@@ -64,12 +64,18 @@ def api_available():
 @app.get("/api/person")
 @require_pw
 def api_person():
-    row = request.args.get("row","")
-    drop_days = request.args.get("drop_days","0")=="1"
-    info = person_info(row, drop_days=drop_days)
-    if info is None:
-        return jsonify(ok=False, error="not found"), 404
-    return jsonify(ok=True, fields=info)
+    pw = request.args.get("pw")
+    if pw != os.getenv("APP_PASSWORD"):
+        return ("Forbidden", 403)
+
+    query = request.args.get("q", "")
+    org   = request.args.get("org")  # optional GSU/ULM filter
+    try:
+        data = person_info(query, org=org)
+        return jsonify({"ok": True, "person": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 400
+
 
 @app.get("/api/roster")
 @require_pw
