@@ -4,6 +4,11 @@ from flask import Flask, request, jsonify, render_template_string
 from attendance import list_events, read_event_records, leaderboard, list_roster, add_event_and_mark
 from availability import find_available, person_info
 
+
+import logging
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s: %(message)s")
+
+
 APP_PASSWORD = os.getenv("APP_PASSWORD","").strip()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD","").strip()
 
