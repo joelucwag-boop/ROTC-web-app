@@ -12,6 +12,15 @@ import gspread
 DAY_COLS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
 # ---- time helpers ----
+
+if text.lstrip().startswith("<") and "html" in (r.headers.get("content-type","").lower()):
+    print("[csv] Got HTML instead of CSV — trying export URL rewrite…")
+    new_url = _to_csv_export(url)
+    if new_url != url:
+        url = new_url
+        text = _fetch_text_with_retries(url, timeout=timeout, retries=1, backoff=0.2) or ""
+
+
 def _to_minutes(hhmm: str) -> int:
     hhmm = re.sub(r"[^\d]", "", str(hhmm))
     if len(hhmm) < 3:
@@ -182,6 +191,31 @@ def _fetch_api_df():
 import os, io, time, csv, re, requests
 import pandas as pd
 
+
+
+import re
+
+def _to_csv_export(url: str) -> str:
+    """
+    Convert a Google Sheets EDIT URL to a CSV EXPORT URL if needed.
+    """
+    m = re.search(r"/spreadsheets/d/([^/]+)/", url)
+    gid = None
+    mgid = re.search(r"[?&]gid=(\d+)", url)
+    if mgid:
+        gid = mgid.group(1)
+
+    if "export?format=csv" in url:
+        return url  # already export
+
+    if m:
+        sheet_id = m.group(1)
+        # default gid=0 if none found; better: keep provided gid
+        gid_part = f"&gid={gid}" if gid else ""
+        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_part}"
+
+    return url  # if not a google sheet, return as-is
+
 # ---------------------------
 # Public entry point
 # ---------------------------
@@ -234,7 +268,11 @@ def fetch_csv_df_robust(
     df, skipped = _parse_with_pandas(text, delim, on_bad_lines="error")
     if df is not None:
         print(f"[csv] Parsed strictly with pandas (skipped=0), rows={len(df)} cols={df.shape[1]}")
-        df.columns = _rehydrate_header(df.columns, header)
+        new_cols = _rehydrate_header(df.columns, header)
+            if len(new_cols) == len(df.columns):
+                df.columns = new_cols
+            else:
+                print(f"[csv] Header length mismatch; keeping pandas columns. parsed={len(df.columns)} expected={len(header)}")
         df = _postprocess_df(df, required_columns)
         return df
 
@@ -517,6 +555,10 @@ def find_available(day: str, start_hhmm: str, end_hhmm: str, org: str | None = N
     return ok
 
 def _fetch_csv_df():
+    url = os.getenv("AVAILABILITY_CSV_URL") or os.getenv("GOOGLE_SHEET_URL")
+    url = _to_csv_export(url or "")
+    print(f"[availability] Using robust CSV fetcher… url={url!r}")
+    return fetch_csv_df_robust(url, required_columns=["First Name","Last Name","MS level","Monday"])
     """Legacy alias — redirect to robust loader for compatibility."""
     url = os.getenv("GOOGLE_SHEET_URL")
     print("[availability] Using robust CSV fetcher…")
