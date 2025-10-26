@@ -69,6 +69,23 @@ def _norm_ms(val):
 # availability.py  (append at the end)
 def _fetch_avail_df():
     mode = os.getenv("AVAIL_MODE", "api").lower()
+    print(f"[availability] mode={mode}")
+    try:
+        if mode == "api":
+            print("[availability] Fetching via Google API…")
+            df = _fetch_api_df()
+        else:
+            print("[availability] Fetching via robust CSV fallback…")
+            df = _fetch_csv_df()
+        print(f"[availability] DataFrame shape: {df.shape}")
+        print(f"[availability] Columns: {list(df.columns)}")
+        return df
+    except Exception as e:
+        import traceback
+        print("[availability] ERROR:", e)
+        traceback.print_exc()
+        return pd.DataFrame()
+    mode = os.getenv("AVAIL_MODE", "api").lower()
     if mode == "api":
         return _fetch_api_df()
     return _fetch_csv_df()
