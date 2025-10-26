@@ -161,13 +161,258 @@ def _fetch_api_df():
     return df
 
 # ---- CSV mode (fallback) ----
-def _fetch_csv_df():
-    url = os.getenv("GOOGLE_SHEET_URL")
+# robust_csv_loader.py
+import os, io, time, csv, re, requests
+import pandas as pd
+
+# ---------------------------
+# Public entry point
+# ---------------------------
+def fetch_csv_df_robust(
+    url: str | None = None,
+    *,
+    required_columns: list[str] | None = None,
+    max_mb: float = 15.0,
+    timeout: int = 20,
+    retries: int = 3,
+    retry_backoff: float = 0.8,
+) -> pd.DataFrame:
+    """
+    Ultra-robust CSV fetch + parse for Google Sheets 'export?format=csv&gid=...'.
+    - Multi-strategy parsing: strict -> skip-bad -> repair
+    - Handles encodings, BOM, delimiters, duplicate headers, bad rows
+    - Optionally enforces `required_columns` (adds empty if missing)
+    - Prints diagnostics; never throws on malformed content (returns empty df on hard failure)
+    """
+    url = url or os.getenv("GOOGLE_SHEET_URL")
     if not url:
-        raise RuntimeError("GOOGLE_SHEET_URL missing")
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return pd.read_csv(io.StringIO(r.text))
+        print("[csv] ERROR: missing url / GOOGLE_SHEET_URL")
+        return pd.DataFrame()
+
+    # 1) Fetch with retries
+    text = _fetch_text_with_retries(url, timeout=timeout, retries=retries, backoff=retry_backoff)
+    if text is None:
+        return pd.DataFrame()
+
+    # Hard size guard (protect against wrong endpoint returning HTML blob)
+    approx_mb = len(text) / (1024 * 1024)
+    if approx_mb > max_mb:
+        print(f"[csv] WARNING: payload is {approx_mb:.2f} MB (> {max_mb} MB). Proceeding, but this is suspicious.")
+
+    # Normalize newlines; handle BOM
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.lstrip("\ufeff")
+
+    # 2) Header probe and delimiter detect
+    delim = _detect_delimiter(text)
+    header = _read_header(text, delim)
+    if not header:
+        print("[csv] ERROR: header not detected. Returning empty df.")
+        return pd.DataFrame()
+
+    header = _normalize_headers(header)
+    n_cols = len(header)
+
+    # 3) Strategy A: strict pandas parse
+    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="error")
+    if df is not None:
+        print(f"[csv] Parsed strictly with pandas (skipped=0), rows={len(df)} cols={df.shape[1]}")
+        df.columns = _rehydrate_header(df.columns, header)
+        df = _postprocess_df(df, required_columns)
+        return df
+
+    # 4) Strategy B: pandas with skip-bad-lines
+    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="skip")
+    if df is not None:
+        print(f"[csv] Parsed with skip-bad-lines (skipped≈{skipped}), rows={len(df)} cols={df.shape[1]}")
+        df.columns = _rehydrate_header(df.columns, header)
+        df = _postprocess_df(df, required_columns)
+        return df
+
+    # 5) Strategy C: heuristic row repair
+    df = _repair_csv_to_df(text, header, delim)
+    print(f"[csv] Heuristic repair parse, rows={len(df)} cols={df.shape[1]}")
+    df = _postprocess_df(df, required_columns)
+    return df
+
+
+# ---------------------------
+# Fetch helpers
+# ---------------------------
+def _fetch_text_with_retries(url: str, *, timeout: int, retries: int, backoff: float) -> str | None:
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            ct = r.headers.get("content-type", "").lower()
+            if "html" in ct:
+                # Sometimes Google returns an HTML interstitial (permissions / auth)
+                print(f"[csv] WARNING: content-type '{ct}'. This may be HTML, not CSV.")
+            # Encoding handling
+            enc = r.encoding or "utf-8"
+            try:
+                text = r.content.decode(enc, errors="replace")
+            except LookupError:
+                text = r.content.decode("utf-8", errors="replace")
+            return text
+        except Exception as e:
+            last_err = e
+            sleep = backoff * attempt
+            print(f"[csv] Fetch attempt {attempt}/{retries} failed: {e}. Retrying in {sleep:.1f}s…")
+            time.sleep(sleep)
+    print(f"[csv] ERROR: all fetch attempts failed. Last error: {last_err}")
+    return None
+
+
+# ---------------------------
+# Parsing helpers
+# ---------------------------
+def _detect_delimiter(text: str) -> str:
+    # Probe first non-empty line to guess delimiter
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        candidates = [",", ";", "\t", "|"]
+        counts = {d: line.count(d) for d in candidates}
+        delim = max(counts, key=counts.get)
+        # If no delimiter appears, fall back to comma
+        return delim if counts[delim] > 0 else ","
+    return ","
+
+
+def _read_header(text: str, delim: str) -> list[str]:
+    sio = io.StringIO(text)
+    reader = csv.reader(sio, delimiter=delim)
+    for row in reader:
+        if any(cell.strip() for cell in row):
+            return row
+    return []
+
+
+def _normalize_headers(cols: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen = {}
+    for c in cols:
+        c = _clean_str(c)
+        if c in seen:
+            seen[c] += 1
+            c = f"{c}_{seen[c]}"
+        else:
+            seen[c] = 0
+        cleaned.append(c)
+    return cleaned
+
+
+def _rehydrate_header(existing_cols, target_header):
+    """
+    If pandas merged names oddly, apply the normalized header shape.
+    """
+    if len(existing_cols) != len(target_header):
+        return target_header  # force header shape
+    # keep existing but normalized names preferred from target
+    return target_header
+
+
+def _parse_with_pandas(text: str, delim: str, *, on_bad_lines: str):
+    """
+    Returns (df, skipped_estimate) or (None, None) on hard failure.
+    """
+    raw_lines = text.count("\n") + 1
+    try:
+        df = pd.read_csv(
+            io.StringIO(text),
+            dtype=str,
+            sep=delim,
+            engine="python",         # required for on_bad_lines
+            on_bad_lines=on_bad_lines,
+            keep_default_na=False,   # empty -> ""
+            quoting=csv.QUOTE_MINIMAL
+        )
+        df.columns = [str(c) for c in df.columns]
+        parsed = len(df.index) + 1  # + header
+        skipped = max(raw_lines - parsed, 0)
+        return df, skipped
+    except Exception as e:
+        print(f"[csv] pandas parse ({on_bad_lines=}) failed: {e}")
+        return None, None
+
+
+def _repair_csv_to_df(text: str, header: list[str], delim: str) -> pd.DataFrame:
+    """
+    Heuristic repair:
+    - If row has fewer fields, right-pad with ""
+    - If row has extra fields, merge extras into last column
+    - Trims whitespace, drops fully empty rows
+    """
+    n = len(header)
+    reader = csv.reader(io.StringIO(text), delimiter=delim)
+    rows = list(reader)[1:]  # skip original header
+    fixed = []
+    for r in rows:
+        # If completely empty row, skip
+        if not any((cell or "").strip() for cell in r):
+            continue
+        if len(r) < n:
+            r = r + [""] * (n - len(r))
+        elif len(r) > n:
+            r = r[:n-1] + [delim.join(r[n-1:])]
+        fixed.append([_clean_str(c) for c in r])
+
+    df = pd.DataFrame(fixed, columns=_normalize_headers(header))
+    
+    
+    try:
+        repaired_path = "/tmp/repaired_availability.csv"
+        df.to_csv(repaired_path, index=False)
+        print(f"[csv] Saved repaired CSV to {repaired_path}")
+    except Exception as e:
+        print(f"[csv] Could not save repaired CSV: {e}")
+
+    return df
+
+
+# ---------------------------
+# Post-processing
+# ---------------------------
+def _postprocess_df(df: pd.DataFrame, required_columns: list[str] | None) -> pd.DataFrame:
+    # Trim whitespace on all strings
+    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+
+    # Replace common "null" spellings with empty
+    nullish = {"na", "n/a", "null", "none", "nil", "nan"}
+    df = df.replace({c: {v: "" for v in nullish} for c in df.columns}, regex=False)
+
+    # Drop fully empty rows
+    df = df[~(df.astype(str).apply(lambda r: "".join(r), axis=1).str.strip() == "")]
+
+    # De-duplicate rows
+    before = len(df)
+    df = df.drop_duplicates(keep="first").reset_index(drop=True)
+    dropped = before - len(df)
+    if dropped:
+        print(f"[csv] Dropped {dropped} duplicate row(s).")
+
+    # Enforce required schema
+    if required_columns:
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = ""
+        # Reorder to required-first then the rest
+        remainder = [c for c in df.columns if c not in required_columns]
+        df = df[required_columns + remainder]
+
+    return df
+
+
+def _clean_str(s: str) -> str:
+    # Remove invisible control chars, normalize spaces, trim
+    if s is None:
+        return ""
+    s = re.sub(r"[\u200B-\u200D\uFEFF]", "", str(s))  # zero-width chars
+    s = s.replace("\xa0", " ")
+    return s.strip()
+
 
 def find_available(day: str, start_hhmm: str, end_hhmm: str, org: str | None = None):
     day = day.strip().capitalize()
@@ -253,4 +498,11 @@ def find_available(day: str, start_hhmm: str, end_hhmm: str, org: str | None = N
         return int(m.group(0)) if m else 99
     ok.sort(key=_ms_key)
     return ok
+
+def _fetch_csv_df():
+    """Legacy alias — redirect to robust loader for compatibility."""
+    url = os.getenv("GOOGLE_SHEET_URL")
+    print("[availability] Using robust CSV fetcher…")
+    return fetch_csv_df_robust(url)
+
 
