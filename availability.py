@@ -66,6 +66,84 @@ def _norm_ms(val):
     return m.group(0) if m else s
 
 # ---- API mode ----
+# availability.py  (append at the end)
+def _fetch_avail_df():
+    mode = os.getenv("AVAIL_MODE", "api").lower()
+    if mode == "api":
+        return _fetch_api_df()
+    return _fetch_csv_df()
+
+def _col(df, *cands):
+    cols = {c.lower(): c for c in df.columns}
+    for cand in cands:
+        if cand.lower() in cols:
+            return cols[cand.lower()]
+    # loose startswith
+    for k in cols:
+        for cand in cands:
+            if k.startswith(cand.lower()):
+                return cols[k]
+    return None
+
+def person_info(query: str, org: str | None = None):
+    """
+    query can be an email or 'First Last'. Returns a dict of fields.
+    """
+    df = _fetch_avail_df()
+
+    first_c = _col(df, "First Name", "First", "First name")
+    last_c  = _col(df, "Last Name", "Last", "Surname")
+    email_c = _col(df, "School Email", "Email")
+    phone_c = _col(df, "Phone Number", "Phone")
+    ms_c    = _col(df, "MS level", "MS Level", "MS")
+    school_c= _col(df, "Academic School", "School")
+    major_c = _col(df, "Academic Major", "Major")
+    contracted_c = _col(df, "Are you contracted?", "contracted")
+    prior_c = _col(df, "Are you prior service? (Guard or otherwise)", "prior service")
+    vehicle_c = _col(df, "Do you have a vehicle or reliable transportation to?", "vehicle")
+
+    if org and school_c in df.columns:
+        df = df[df[school_c].astype(str).str.contains(org, case=False, na=False)]
+
+    q = str(query).strip().lower()
+
+    hit = None
+    if email_c and q and "@" in q:
+        m = df[df[email_c].astype(str).str.lower() == q]
+        if not m.empty:
+            hit = m.iloc[0]
+    if hit is None and first_c and last_c:
+        # split "First Last"
+        parts = q.split()
+        if len(parts) >= 2:
+            f, l = parts[0], parts[-1]
+            m = df[(df[first_c].astype(str).str.lower() == f) &
+                   (df[last_c].astype(str).str.lower() == l)]
+            if not m.empty:
+                hit = m.iloc[0]
+
+    if hit is None:
+        raise ValueError("No matching cadet found")
+
+    # Build card (exclude Mon–Fri busy columns on purpose)
+    def g(col): 
+        return (str(hit.get(col, "")).strip() if col in df.columns else "")
+
+    return {
+        "first": g(first_c),
+        "last": g(last_c),
+        "ms": g(ms_c),
+        "email": g(email_c),
+        "phone": g(phone_c),
+        "school": g(school_c),
+        "major": g(major_c),
+        "contracted": g(contracted_c),
+        "prior_service": g(prior_c),
+        "vehicle": g(vehicle_c),
+    }
+
+
+
 def _fetch_api_df():
     info = None
     if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
