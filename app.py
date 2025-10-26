@@ -9,6 +9,8 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD","").strip()
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
+
+
 def require_pw(view):
     from functools import wraps
     @wraps(view)
@@ -56,6 +58,18 @@ def index():
 @app.get("/api/available")
 def api_available():
     # password already checked at top-level route; add guard if needed
+    day_map = {
+    "Mon": "Monday",
+    "Tue": "Tuesday",
+    "Wed": "Wednesday",
+    "Thu": "Thursday",
+    "Fri": "Friday"
+    }
+
+    day = request.args.get("day")
+    day = day_map.get(day, day)  # Convert short form if necessary
+
+    
     pw = request.args.get("pw")
     if pw != os.getenv("APP_PASSWORD"):
         return ("Forbidden", 403)
