@@ -196,6 +196,29 @@ def envcheck():
 
     return out
 
+# app.py (excerpt)
+from flask import Flask, request, jsonify, render_template
+from availability import find_available
+
+@app.get("/api/available")
+def api_available():
+    # password already checked at top-level route; add guard if needed
+    pw = request.args.get("pw")
+    if pw != os.getenv("APP_PASSWORD"):
+        return ("Forbidden", 403)
+
+    day = request.args.get("day", "Mon")
+    start = request.args.get("start", "0900")
+    end = request.args.get("end", "1000")
+    org = request.args.get("org")   # optional ?org=GSU
+
+    try:
+        rows = find_available(day, start, end, org=org)
+        return jsonify({"ok": True, "rows": rows})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 400
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")), debug=os.getenv("FLASK_ENV")=="development")
