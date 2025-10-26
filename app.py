@@ -129,6 +129,72 @@ def api_att_leaderboard():
 @app.get("/healthz")
 def healthz():
     return "ok", 200
+# --- TEMP: environment + connectivity check ---
+@app.get("/api/envcheck")
+def envcheck():
+    import os, json, traceback
+    out = {
+        "have": {
+            "APP_PASSWORD": bool(os.getenv("APP_PASSWORD")),
+            "ADMIN_PASSWORD": bool(os.getenv("ADMIN_PASSWORD")),
+            "GOOGLE_SHEET_URL": bool(os.getenv("GOOGLE_SHEET_URL")),
+            "SPREADSHEET_ID": bool(os.getenv("SPREADSHEET_ID")),
+            "WORKSHEET_NAME": bool(os.getenv("WORKSHEET_NAME")),
+            "GSU_HEADER_ROW": bool(os.getenv("GSU_HEADER_ROW")),
+            "ULM_HEADER_ROW": bool(os.getenv("ULM_HEADER_ROW")),
+            "GOOGLE_SERVICE_ACCOUNT_JSON": bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")),
+            "GOOGLE_SERVICE_ACCOUNT_JSON_PATH": bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")),
+        },
+        "service_account_email": None,
+        "errors": {}
+    }
+    # Try to parse service account (env or file)
+    try:
+        if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
+            p = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+            with open(p, "r", encoding="utf-8") as f:
+                out["service_account_email"] = json.load(f)["client_email"]
+        elif os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+            out["service_account_email"] = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))["client_email"]
+    except Exception as e:
+        out["errors"]["creds_parse"] = f"{type(e).__name__}: {e}"
+
+    # Try availability CSV fetch (HEAD request)
+    try:
+        import requests
+        url = os.getenv("GOOGLE_SHEET_URL")
+        if url:
+            r = requests.get(url, timeout=15)
+            out["availability_http"] = {"status": r.status_code, "ok": r.ok, "len": len(r.text)}
+        else:
+            out["availability_http"] = {"status": None, "ok": False, "len": 0}
+    except Exception as e:
+        out["errors"]["availability_http"] = f"{type(e).__name__}: {e}"
+
+    # Try Sheets auth + open roster (no writes)
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        import json as _json, os as _os
+        info = None
+        if _os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
+            with open(_os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"), "r", encoding="utf-8") as f:
+                info = _json.load(f)
+        else:
+            info = _json.loads(_os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "{}"))
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        gc = gspread.authorize(creds)
+        ws = gc.open_by_key(_os.getenv("SPREADSHEET_ID")).worksheet(_os.getenv("WORKSHEET_NAME"))
+        # read a tiny range to confirm access
+        vals = ws.get('A1:C10')
+        out["attendance_open_ok"] = True
+        out["attendance_sample_rows"] = len(vals)
+    except Exception as e:
+        out["attendance_open_ok"] = False
+        out["errors"]["attendance_open"] = f"{type(e).__name__}: {e}"
+
+    return out
 
 
 if __name__ == "__main__":
