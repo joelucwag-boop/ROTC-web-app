@@ -1,49 +1,96 @@
-# availability.py
-import os, io, json, re
-import pandas as pd
+# availability.py — COMPLETE, ROBUST, DIAGNOSTIC
+# ------------------------------------------------
+# Supports two sources for the availability sheet:
+#   - API mode  (AVAIL_MODE=api + AVAIL_SPREADSHEET_ID, AVAIL_WORKSHEET_NAME)
+#   - CSV mode  (AVAIL_MODE=csv + AVAILABILITY_CSV_URL or GOOGLE_SHEET_URL)
+#
+# Key endpoints used by app.py:
+#   - find_available(day, start_hhmm, end_hhmm, org=None)
+#   - person_info(query, org=None)
+#
+# This file prints lots of diagnostics to stdout so you can see what's happening
+# in Render logs (Live Tail). It never silently swallows problems.
 
-# Optional: CSV fallback
+import os
+import io
+import re
+import time
+import csv
+import json
+from typing import List, Tuple, Optional, Dict
+
+import pandas as pd
 import requests
 
-# API auth
-from google.oauth2.service_account import Credentials
-import gspread
+# ---- Google API (only used in AVAIL_MODE=api) ----
+try:
+    from google.oauth2.service_account import Credentials
+    import gspread
+except Exception as _e:
+    # Not fatal in csv mode; we just print so it's obvious if API mode is chosen.
+    print("[availability] gspread/google-auth not available (ok if using CSV mode):", _e)
 
 DAY_COLS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
-# ---- time helpers ----
 
-if text.lstrip().startswith("<") and "html" in (r.headers.get("content-type","").lower()):
-    print("[csv] Got HTML instead of CSV — trying export URL rewrite…")
-    new_url = _to_csv_export(url)
-    if new_url != url:
-        url = new_url
-        text = _fetch_text_with_retries(url, timeout=timeout, retries=1, backoff=0.2) or ""
+# =============================================================================
+# Utilities: time/interval parsing
+# =============================================================================
 
-
-def _to_minutes(hhmm: str) -> int:
-    hhmm = re.sub(r"[^\d]", "", str(hhmm))
-    if len(hhmm) < 3:
-        return None
-    if len(hhmm) == 3:   # 900 -> 09:00
-        hhmm = "0" + hhmm
-    hh = int(hhmm[:2])
-    mm = int(hhmm[2:4])
-    return hh * 60 + mm
-
-def _parse_block(block: str):
+def _to_minutes(hhmm: str) -> Optional[int]:
     """
-    '0900-0930, 1000-1030' -> [(540, 570), (600, 630)]
-    Accepts semi-colon/comma/space separated. Ignores garbage.
+    '0900' -> 540
+    '900'  -> 540
+    returns None if not parseable
+    """
+    if hhmm is None:
+        return None
+    s = re.sub(r"[^\d]", "", str(hhmm))
+    if len(s) < 3:
+        return None
+    if len(s) == 3:  # 900 -> 0900
+        s = "0" + s
+    try:
+        hh = int(s[:2])
+        mm = int(s[2:4])
+        if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+            return None
+        return hh * 60 + mm
+    except Exception:
+        return None
+
+
+def _parse_block(block: str) -> List[Tuple[int, int]]:
+    """
+    Parse a cell containing busy time ranges into intervals in minutes.
+    Accepts things like:
+      0900-1000
+      900-1000
+      0900–1000 (en dash)
+      0900 - 1000, 1030-1100
+      0900-1000; 1030-1100
+    Ignores junk gracefully.
     """
     if not block:
         return []
-    items = re.split(r"[;,]\s*|\s+\|\s+|\s{2,}", str(block).strip())
-    out = []
-    for it in items:
+    txt = str(block).strip()
+    if not txt:
+        return []
+
+    # Normalize fancy dash
+    txt = txt.replace("–", "-").replace("—", "-")
+
+    # Split on commas, semicolons, multiple spaces, or pipes
+    parts = re.split(r"[;,]\s*|\s+\|\s+|\s{2,}", txt)
+    out: List[Tuple[int, int]] = []
+
+    for it in parts:
+        it = it.strip()
+        if not it:
+            continue
         m = re.match(r"^\s*(\d{3,4})\s*-\s*(\d{3,4})\s*$", it)
         if not m:
-            # Single time like '1100' -> ignore as unusable range
+            # Single time like "1100" isn't usable as a range → skip
             continue
         s = _to_minutes(m.group(1))
         e = _to_minutes(m.group(2))
@@ -54,300 +101,39 @@ def _parse_block(block: str):
         out.append((s, e))
     return out
 
-def _overlap(a, b):
-    """ intervals (s1,e1) and (s2,e2) overlap if s1 < e2 and s2 < e1 """
+
+def _overlap(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
+    """Intervals (s1,e1) and (s2,e2) overlap if s1 < e2 and s2 < e1."""
     return a[0] < b[1] and b[0] < a[1]
 
-def _row_is_free(row, day, start_min, end_min):
-    # Busy intervals are what the form captured under the day’s column.
-    # “Free” means there is **no** overlap with the requested window.
-    txt = row.get(day, "")
-    blocks = _parse_block(txt)
-    req = (start_min, end_min)
-    for b in blocks:
+
+def _row_is_free(row: pd.Series, day_col: str, s_min: int, e_min: int) -> bool:
+    """
+    Your form stores BUSY windows under each day. A cadet is "free" if
+    NONE of their busy blocks overlap with the requested window.
+    """
+    raw = str(row.get(day_col, "") or "")
+    busy_blocks = _parse_block(raw)
+    req = (s_min, e_min)
+    for b in busy_blocks:
         if _overlap(b, req):
             return False
     return True
 
-def _norm_ms(val):
-    s = str(val).strip()
+
+def _norm_ms(val) -> str:
+    s = str(val or "").strip()
     m = re.search(r"\d+", s)
     return m.group(0) if m else s
 
-# ---- API mode ----
-# availability.py  (append at the end)
-def _fetch_avail_df():
-    mode = os.getenv("AVAIL_MODE", "api").lower()
-    print(f"[availability] mode={mode}")
-    try:
-        if mode == "api":
-            print("[availability] Fetching via Google API…")
-            df = _fetch_api_df()
-        else:
-            print("[availability] Fetching via robust CSV fallback…")
-            df = _fetch_csv_df()
-        print(f"[availability] DataFrame shape: {df.shape}")
-        print(f"[availability] Columns: {list(df.columns)}")
-        return df
-    except Exception as e:
-        import traceback
-        print("[availability] ERROR:", e)
-        traceback.print_exc()
-        return pd.DataFrame()
-    mode = os.getenv("AVAIL_MODE", "api").lower()
-    if mode == "api":
-        return _fetch_api_df()
-    return _fetch_csv_df()
 
-def _col(df, *cands):
-    cols = {c.lower(): c for c in df.columns}
-    for cand in cands:
-        if cand.lower() in cols:
-            return cols[cand.lower()]
-    # loose startswith
-    for k in cols:
-        for cand in cands:
-            if k.startswith(cand.lower()):
-                return cols[k]
-    return None
+# =============================================================================
+# Column helpers
+# =============================================================================
 
-def person_info(query: str, org: str | None = None):
-    """
-    query can be an email or 'First Last'. Returns a dict of fields.
-    """
-    df = _fetch_avail_df()
-
-    first_c = _col(df, "First Name", "First", "First name")
-    last_c  = _col(df, "Last Name", "Last", "Surname")
-    email_c = _col(df, "School Email", "Email")
-    phone_c = _col(df, "Phone Number", "Phone")
-    ms_c    = _col(df, "MS level", "MS Level", "MS")
-    school_c= _col(df, "Academic School", "School")
-    major_c = _col(df, "Academic Major", "Major")
-    contracted_c = _col(df, "Are you contracted?", "contracted")
-    prior_c = _col(df, "Are you prior service? (Guard or otherwise)", "prior service")
-    vehicle_c = _col(df, "Do you have a vehicle or reliable transportation to?", "vehicle")
-
-    if org and school_c in df.columns:
-        df = df[df[school_c].astype(str).str.contains(org, case=False, na=False)]
-
-    q = str(query).strip().lower()
-
-    hit = None
-    if email_c and q and "@" in q:
-        m = df[df[email_c].astype(str).str.lower() == q]
-        if not m.empty:
-            hit = m.iloc[0]
-    if hit is None and first_c and last_c:
-        # split "First Last"
-        parts = q.split()
-        if len(parts) >= 2:
-            f, l = parts[0], parts[-1]
-            m = df[(df[first_c].astype(str).str.lower() == f) &
-                   (df[last_c].astype(str).str.lower() == l)]
-            if not m.empty:
-                hit = m.iloc[0]
-
-    if hit is None:
-        raise ValueError("No matching cadet found")
-
-    # Build card (exclude Mon–Fri busy columns on purpose)
-    def g(col): 
-        return (str(hit.get(col, "")).strip() if col in df.columns else "")
-
-    return {
-        "first": g(first_c),
-        "last": g(last_c),
-        "ms": g(ms_c),
-        "email": g(email_c),
-        "phone": g(phone_c),
-        "school": g(school_c),
-        "major": g(major_c),
-        "contracted": g(contracted_c),
-        "prior_service": g(prior_c),
-        "vehicle": g(vehicle_c),
-    }
-
-
-
-def _fetch_api_df():
-    info = None
-    if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
-        with open(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"), "r", encoding="utf-8") as f:
-            info = json.load(f)
-    else:
-        info = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "{}"))
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = Credentials.from_service_account_info(info, scopes=scopes)
-    gc = gspread.authorize(creds)
-    ws = gc.open_by_key(os.getenv("AVAIL_SPREADSHEET_ID")).worksheet(os.getenv("AVAIL_WORKSHEET_NAME", "Form Responses 1"))
-    # get_all_records -> header -> dict rows
-    df = pd.DataFrame(ws.get_all_records())
-    return df
-
-# ---- CSV mode (fallback) ----
-# robust_csv_loader.py
-import os, io, time, csv, re, requests
-import pandas as pd
-
-
-
-import re
-
-def _to_csv_export(url: str) -> str:
-    """
-    Convert a Google Sheets EDIT URL to a CSV EXPORT URL if needed.
-    """
-    m = re.search(r"/spreadsheets/d/([^/]+)/", url)
-    gid = None
-    mgid = re.search(r"[?&]gid=(\d+)", url)
-    if mgid:
-        gid = mgid.group(1)
-
-    if "export?format=csv" in url:
-        return url  # already export
-
-    if m:
-        sheet_id = m.group(1)
-        # default gid=0 if none found; better: keep provided gid
-        gid_part = f"&gid={gid}" if gid else ""
-        return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_part}"
-
-    return url  # if not a google sheet, return as-is
-
-# ---------------------------
-# Public entry point
-# ---------------------------
-def fetch_csv_df_robust(
-    url: str | None = None,
-    *,
-    required_columns: list[str] | None = None,
-    max_mb: float = 15.0,
-    timeout: int = 20,
-    retries: int = 3,
-    retry_backoff: float = 0.8,
-) -> pd.DataFrame:
-    """
-    Ultra-robust CSV fetch + parse for Google Sheets 'export?format=csv&gid=...'.
-    - Multi-strategy parsing: strict -> skip-bad -> repair
-    - Handles encodings, BOM, delimiters, duplicate headers, bad rows
-    - Optionally enforces `required_columns` (adds empty if missing)
-    - Prints diagnostics; never throws on malformed content (returns empty df on hard failure)
-    """
-    url = url or os.getenv("GOOGLE_SHEET_URL")
-    if not url:
-        print("[csv] ERROR: missing url / GOOGLE_SHEET_URL")
-        return pd.DataFrame()
-
-    # 1) Fetch with retries
-    text = _fetch_text_with_retries(url, timeout=timeout, retries=retries, backoff=retry_backoff)
-    if text is None:
-        return pd.DataFrame()
-
-    # Hard size guard (protect against wrong endpoint returning HTML blob)
-    approx_mb = len(text) / (1024 * 1024)
-    if approx_mb > max_mb:
-        print(f"[csv] WARNING: payload is {approx_mb:.2f} MB (> {max_mb} MB). Proceeding, but this is suspicious.")
-
-    # Normalize newlines; handle BOM
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.lstrip("\ufeff")
-
-    # 2) Header probe and delimiter detect
-    delim = _detect_delimiter(text)
-    header = _read_header(text, delim)
-    if not header:
-        print("[csv] ERROR: header not detected. Returning empty df.")
-        return pd.DataFrame()
-
-    header = _normalize_headers(header)
-    n_cols = len(header)
-
-    # 3) Strategy A: strict pandas parse
-    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="error")
-    if df is not None:
-        print(f"[csv] Parsed strictly with pandas (skipped=0), rows={len(df)} cols={df.shape[1]}")
-        new_cols = _rehydrate_header(df.columns, header)
-            if len(new_cols) == len(df.columns):
-                df.columns = new_cols
-            else:
-                print(f"[csv] Header length mismatch; keeping pandas columns. parsed={len(df.columns)} expected={len(header)}")
-        df = _postprocess_df(df, required_columns)
-        return df
-
-    # 4) Strategy B: pandas with skip-bad-lines
-    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="skip")
-    if df is not None:
-        print(f"[csv] Parsed with skip-bad-lines (skipped≈{skipped}), rows={len(df)} cols={df.shape[1]}")
-        df.columns = _rehydrate_header(df.columns, header)
-        df = _postprocess_df(df, required_columns)
-        return df
-
-    # 5) Strategy C: heuristic row repair
-    df = _repair_csv_to_df(text, header, delim)
-    print(f"[csv] Heuristic repair parse, rows={len(df)} cols={df.shape[1]}")
-    df = _postprocess_df(df, required_columns)
-    return df
-
-
-# ---------------------------
-# Fetch helpers
-# ---------------------------
-def _fetch_text_with_retries(url: str, *, timeout: int, retries: int, backoff: float) -> str | None:
-    last_err = None
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.get(url, timeout=timeout)
-            r.raise_for_status()
-            ct = r.headers.get("content-type", "").lower()
-            if "html" in ct:
-                # Sometimes Google returns an HTML interstitial (permissions / auth)
-                print(f"[csv] WARNING: content-type '{ct}'. This may be HTML, not CSV.")
-            # Encoding handling
-            enc = r.encoding or "utf-8"
-            try:
-                text = r.content.decode(enc, errors="replace")
-            except LookupError:
-                text = r.content.decode("utf-8", errors="replace")
-            return text
-        except Exception as e:
-            last_err = e
-            sleep = backoff * attempt
-            print(f"[csv] Fetch attempt {attempt}/{retries} failed: {e}. Retrying in {sleep:.1f}s…")
-            time.sleep(sleep)
-    print(f"[csv] ERROR: all fetch attempts failed. Last error: {last_err}")
-    return None
-
-
-# ---------------------------
-# Parsing helpers
-# ---------------------------
-def _detect_delimiter(text: str) -> str:
-    # Probe first non-empty line to guess delimiter
-    for line in text.split("\n"):
-        if not line.strip():
-            continue
-        candidates = [",", ";", "\t", "|"]
-        counts = {d: line.count(d) for d in candidates}
-        delim = max(counts, key=counts.get)
-        # If no delimiter appears, fall back to comma
-        return delim if counts[delim] > 0 else ","
-    return ","
-
-
-def _read_header(text: str, delim: str) -> list[str]:
-    sio = io.StringIO(text)
-    reader = csv.reader(sio, delimiter=delim)
-    for row in reader:
-        if any(cell.strip() for cell in row):
-            return row
-    return []
-
-
-def _normalize_headers(cols: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    seen = {}
+def _normalize_headers(cols: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    seen: Dict[str, int] = {}
     for c in cols:
         c = _clean_str(c)
         if c in seen:
@@ -359,13 +145,418 @@ def _normalize_headers(cols: list[str]) -> list[str]:
     return cleaned
 
 
+def _clean_str(s: str) -> str:
+    if s is None:
+        return ""
+    s = re.sub(r"[\u200B-\u200D\uFEFF]", "", str(s))  # zero-width
+    s = s.replace("\xa0", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _col(df: pd.DataFrame, *candidates: str) -> Optional[str]:
+    """
+    Case-insensitive resolver. Tries exact lower match first, then startswith.
+    Returns the actual DataFrame column name or None.
+    """
+    cols = {c.lower(): c for c in df.columns}
+    for cand in candidates:
+        lc = cand.lower()
+        if lc in cols:
+            return cols[lc]
+    for k in cols:
+        for cand in candidates:
+            if k.startswith(cand.lower()):
+                return cols[k]
+    return None
+
+
+# =============================================================================
+# Mode selection
+# =============================================================================
+
+def _fetch_avail_df() -> pd.DataFrame:
+    mode = (os.getenv("AVAIL_MODE") or "api").strip().lower()
+    print(f"[availability] mode={mode}")
+    try:
+        if mode == "api":
+            print("[availability] Fetching via Google API…")
+            df = _fetch_api_df()
+        else:
+            print("[availability] Fetching via robust CSV fallback…")
+            df = _fetch_csv_df()
+
+        # Post-normalize: strip spaces in headers and values
+        df.columns = [_clean_str(c) for c in df.columns]
+        df = df.applymap(lambda x: _clean_str(x) if isinstance(x, str) else x)
+
+        print(f"[availability] DataFrame shape: {df.shape}")
+        print(f"[availability] Columns: {list(df.columns)}[:10] ...")
+        return df
+
+    except Exception as e:
+        import traceback
+        print("[availability] ERROR while fetching availability:")
+        print("  ", e)
+        traceback.print_exc()
+        # Return empty frame instead of crashing callers
+        return pd.DataFrame()
+
+
+# =============================================================================
+# Public API
+# =============================================================================
+
+def person_info(query: str, org: Optional[str] = None) -> Dict[str, str]:
+    """
+    query can be an email or 'First Last'. Returns a dict of fields.
+    """
+    df = _fetch_avail_df()
+
+    # Resolve flexible columns
+    first_c  = _col(df, "First Name", "First", "First name")
+    last_c   = _col(df, "Last Name", "Last", "Surname", "Family name")
+    email_c  = _col(df, "School Email", "Email")
+    phone_c  = _col(df, "Phone Number", "Phone")
+    ms_c     = _col(df, "MS level", "MS Level", "MS")
+    school_c = _col(df, "Academic School", "School", "Campus")
+    major_c  = _col(df, "Academic Major", "Major")
+    contracted_c = _col(df, "Are you contracted?", "Contracted")
+    prior_c      = _col(df, "Are you prior service? (Guard or otherwise)", "prior service")
+    vehicle_c    = _col(df, "Do you have a vehicle or reliable transportation to?", "vehicle")
+
+    # Optional org filter
+    if org and school_c in (df.columns if not df.empty else []):
+        df = df[df[school_c].astype(str).str.contains(org, case=False, na=False)]
+
+    q = (query or "").strip().lower()
+    if not q or df.empty:
+        raise ValueError("No data or empty query")
+
+    hit = None
+    # Prefer exact email match
+    if email_c and "@" in q:
+        m = df[df[email_c].astype(str).str.lower() == q]
+        if not m.empty:
+            hit = m.iloc[0]
+
+    # Try "First Last"
+    if hit is None and first_c and last_c:
+        parts = q.split()
+        if len(parts) >= 2:
+            f, l = parts[0], parts[-1]
+            m = df[(df[first_c].astype(str).str.lower() == f) &
+                   (df[last_c].astype(str).str.lower() == l)]
+            if not m.empty:
+                hit = m.iloc[0]
+
+    if hit is None:
+        raise ValueError("No matching cadet found")
+
+    def g(colname: Optional[str]) -> str:
+        if not colname or colname not in df.columns:
+            return ""
+        return _clean_str(hit.get(colname, ""))
+
+    return {
+        "first": g(first_c),
+        "last": g(last_c),
+        "ms": _norm_ms(g(ms_c)),
+        "email": g(email_c),
+        "phone": g(phone_c),
+        "school": g(school_c),
+        "major": g(major_c),
+        "contracted": g(contracted_c),
+        "prior_service": g(prior_c),
+        "vehicle": g(vehicle_c),
+    }
+
+
+def find_available(day: str, start_hhmm: str, end_hhmm: str, org: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    Returns a list of cadets whose BUSY windows **do not** overlap the requested window.
+    Sorted by MS level ascending.
+    """
+    dnorm = (day or "").strip().capitalize()
+    if dnorm not in DAY_COLS:
+        raise ValueError(f"day must be one of {DAY_COLS}")
+
+    s = _to_minutes(start_hhmm)
+    e = _to_minutes(end_hhmm)
+    if s is None or e is None or e <= s:
+        raise ValueError("Bad time window; use HHMM (e.g., 0830 .. 1030) and end > start")
+
+    df = _fetch_avail_df()
+    if df.empty:
+        print("[availability] WARNING: availability DataFrame is EMPTY.")
+        return []
+
+    # Flexible resolution of common columns
+    first_col   = _col(df, "First Name", "First", "Given Name", "First name")
+    last_col    = _col(df, "Last Name", "Last", "Surname", "Family name")
+    ms_col      = _col(df, "MS level", "MS Level", "MS")
+    school_col  = _col(df, "Academic School", "School", "Campus")
+
+    # Validate essentials
+    missing = [k for k, v in {"first": first_col, "last": last_col, "ms": ms_col}.items() if v is None]
+    if missing:
+        raise RuntimeError(f"Missing expected columns in availability sheet: {missing}. Present: {list(df.columns)}")
+
+    # Resolve the day column case-insensitively
+    day_col = None
+    for c in df.columns:
+        if c.strip().lower() == dnorm.lower():
+            day_col = c
+            break
+    if not day_col:
+        raise RuntimeError(f"Day column '{dnorm}' not found in sheet. Columns: {list(df.columns)}")
+
+    # Optional org filter
+    if org and school_col and (school_col in df.columns):
+        pre = len(df)
+        df = df[df[school_col].astype(str).str.contains(org, case=False, na=False)]
+        print(f"[availability] Org filter {org!r}: {pre} -> {len(df)} rows")
+
+    ok: List[Dict[str, str]] = []
+    for _, row in df.iterrows():
+        try:
+            if _row_is_free(row, day_col, s, e):
+                ok.append({
+                    "first": str(row.get(first_col, "")).strip(),
+                    "last":  str(row.get(last_col, "")).strip(),
+                    "ms":    _norm_ms(row.get(ms_col, "")),
+                })
+        except Exception as _e:
+            # Ignore just this row, keep going
+            continue
+
+    def _ms_key(x: Dict[str, str]) -> int:
+        m = re.search(r"\d+", x.get("ms", ""))
+        return int(m.group(0)) if m else 99
+
+    ok.sort(key=_ms_key)
+    print(f"[availability] find_available: matched={len(ok)}")
+    return ok
+
+
+# =============================================================================
+# API MODE
+# =============================================================================
+
+def _fetch_api_df() -> pd.DataFrame:
+    """
+    AVAIL_MODE=api
+    Requires:
+      GOOGLE_SERVICE_ACCOUNT_JSON   (or GOOGLE_SERVICE_ACCOUNT_JSON_PATH)
+      AVAIL_SPREADSHEET_ID
+      AVAIL_WORKSHEET_NAME   (default "Form Responses 1")
+    """
+    # Load service account
+    info = None
+    path = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+    raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if path:
+        print(f"[availability] Using JSON key from file: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            info = json.load(f)
+    else:
+        if not raw.strip():
+            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON missing for API mode")
+        info = json.loads(raw)
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    gc = gspread.authorize(creds)
+
+    ssid = os.getenv("AVAIL_SPREADSHEET_ID")
+    wname = os.getenv("AVAIL_WORKSHEET_NAME", "Form Responses 1")
+    if not ssid:
+        raise RuntimeError("AVAIL_SPREADSHEET_ID missing for API mode")
+
+    ws = gc.open_by_key(ssid).worksheet(wname)
+    rows = ws.get_all_records()
+    df = pd.DataFrame(rows)
+    print(f"[availability] API fetched rows={len(df)} cols={len(df.columns)}")
+    return df
+
+
+# =============================================================================
+# CSV MODE — ultra-robust CSV loader with diagnostics and self-repair
+# =============================================================================
+
+def _to_csv_export(url: str) -> str:
+    """
+    Convert a Google Sheets EDIT URL to CSV EXPORT URL if needed.
+    Keeps gid when present.
+    """
+    if not url:
+        return url
+    if "export?format=csv" in url:
+        return url
+    m = re.search(r"/spreadsheets/d/([^/]+)/", url)
+    mgid = re.search(r"[?&]gid=(\d+)", url)
+    if m:
+        sheet_id = m.group(1)
+        gid_part = f"&gid={mgid.group(1)}" if mgid else ""
+        fixed = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_part}"
+        print(f"[csv] Rewrote edit URL → export URL: {fixed}")
+        return fixed
+    return url
+
+
+def _fetch_csv_df() -> pd.DataFrame:
+    """
+    Legacy alias for callers. Uses robust fetcher underneath.
+    Picks URL from AVAILABILITY_CSV_URL or GOOGLE_SHEET_URL.
+    """
+    url = os.getenv("AVAILABILITY_CSV_URL") or os.getenv("GOOGLE_SHEET_URL")
+    url = _to_csv_export(url or "")
+    print(f"[availability] Using robust CSV fetcher… url={url!r}")
+    return fetch_csv_df_robust(
+        url,
+        required_columns=["First Name", "Last Name", "MS level", "Monday"]
+    )
+
+
+def fetch_csv_df_robust(
+    url: Optional[str] = None,
+    *,
+    required_columns: Optional[List[str]] = None,
+    max_mb: float = 15.0,
+    timeout: int = 20,
+    retries: int = 3,
+    retry_backoff: float = 0.8,
+) -> pd.DataFrame:
+    """
+    Ultra-robust CSV fetch + parse for Google Sheets 'export?format=csv&gid=...'.
+    - Multi-strategy parsing: strict -> skip-bad -> heuristic repair
+    - Handles encodings, BOM, delimiters, duplicate headers, bad rows
+    - Enforces required schema (adds missing columns)
+    - Emits detailed diagnostics; never raises on malformed content (returns empty df on hard failure)
+    """
+    url = url or os.getenv("GOOGLE_SHEET_URL")
+    if not url:
+        print("[csv] ERROR: missing url / GOOGLE_SHEET_URL")
+        return pd.DataFrame()
+
+    # 1) Fetch with retries
+    text, last_headers = _fetch_text_with_retries(url, timeout=timeout, retries=retries, backoff=retry_backoff)
+    if text is None:
+        return pd.DataFrame()
+
+    # If we accidentally got HTML (permissions/login page), retry with export URL
+    if text.lstrip().startswith("<"):
+        print("[csv] WARNING: HTML content detected; trying export URL rewrite…")
+        url2 = _to_csv_export(url)
+        if url2 != url:
+            text2, _ = _fetch_text_with_retries(url2, timeout=timeout, retries=1, backoff=0.2)
+            if text2:
+                text = text2
+
+    # Hard size guard (protect against wrong endpoint returning huge blob)
+    approx_mb = len(text) / (1024 * 1024)
+    if approx_mb > max_mb:
+        print(f"[csv] WARNING: payload is {approx_mb:.2f} MB (> {max_mb} MB). Proceeding, but this is suspicious.")
+
+    # Normalize newlines; handle BOM
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+
+    # Debug preview
+    print(f"[csv] first 160 chars: {text[:160].replace(chr(10),'\\n')}")
+    delim = _detect_delimiter(text)
+    print(f"[csv] detected delimiter: {repr(delim)}")
+    header = _read_header(text, delim)
+    print(f"[csv] header probe (len={len(header)}): {header[:8]}{' ...' if len(header)>8 else ''}")
+    if not header:
+        print("[csv] ERROR: header not detected. Returning empty df.")
+        return pd.DataFrame()
+
+    header = _normalize_headers(header)
+
+    # 3) Strategy A: strict pandas parse
+    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="error")
+    if df is not None:
+        print(f"[csv] Parsed strictly with pandas (skipped=0), rows={len(df)} cols={df.shape[1]}")
+        new_cols = _rehydrate_header(df.columns, header)
+        if len(new_cols) == len(df.columns):
+            df.columns = new_cols
+        else:
+            print(f"[csv] Header length mismatch; keeping pandas columns. parsed={len(df.columns)} expected={len(header)}")
+        df = _postprocess_df(df, required_columns)
+        _save_repaired_snapshot(df)
+        return df
+
+    # 4) Strategy B: pandas with skip-bad-lines
+    df, skipped = _parse_with_pandas(text, delim, on_bad_lines="skip")
+    if df is not None:
+        print(f"[csv] Parsed with skip-bad-lines (skipped≈{skipped}), rows={len(df)} cols={df.shape[1]}")
+        new_cols = _rehydrate_header(df.columns, header)
+        if len(new_cols) == len(df.columns):
+            df.columns = new_cols
+        else:
+            print(f"[csv] Header length mismatch; keeping pandas columns. parsed={len(df.columns)} expected={len(header)}")
+        df = _postprocess_df(df, required_columns)
+        _save_repaired_snapshot(df)
+        return df
+
+    # 5) Strategy C: heuristic row repair
+    df = _repair_csv_to_df(text, header, delim)
+    print(f"[csv] Heuristic repair parse, rows={len(df)} cols={df.shape[1]}")
+    df = _postprocess_df(df, required_columns)
+    _save_repaired_snapshot(df)
+    return df
+
+
+def _fetch_text_with_retries(url: str, *, timeout: int, retries: int, backoff: float):
+    last_err = None
+    last_headers = {}
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            last_headers = dict(r.headers or {})
+            r.raise_for_status()
+            ct = r.headers.get("content-type", "").lower()
+            if "html" in ct:
+                print(f"[csv] WARNING: content-type '{ct}'. This may be HTML, not CSV.")
+            enc = r.encoding or "utf-8"
+            try:
+                text = r.content.decode(enc, errors="replace")
+            except LookupError:
+                text = r.content.decode("utf-8", errors="replace")
+            return text, last_headers
+        except Exception as e:
+            last_err = e
+            sleep = backoff * attempt
+            print(f"[csv] Fetch attempt {attempt}/{retries} failed: {e}. Retrying in {sleep:.1f}s…")
+            time.sleep(sleep)
+    print(f"[csv] ERROR: all fetch attempts failed. Last error: {last_err}")
+    return None, last_headers
+
+
+def _detect_delimiter(text: str) -> str:
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        candidates = [",", ";", "\t", "|"]
+        counts = {d: line.count(d) for d in candidates}
+        delim = max(counts, key=counts.get)
+        return delim if counts[delim] > 0 else ","
+    return ","
+
+
+def _read_header(text: str, delim: str) -> List[str]:
+    sio = io.StringIO(text)
+    reader = csv.reader(sio, delimiter=delim)
+    for row in reader:
+        if any((cell or "").strip() for cell in row):
+            return row
+    return []
+
+
 def _rehydrate_header(existing_cols, target_header):
-    """
-    If pandas merged names oddly, apply the normalized header shape.
-    """
+    # If pandas merged names oddly, apply the normalized header shape.
     if len(existing_cols) != len(target_header):
-        return target_header  # force header shape
-    # keep existing but normalized names preferred from target
+        return list(existing_cols)
     return target_header
 
 
@@ -393,7 +584,7 @@ def _parse_with_pandas(text: str, delim: str, *, on_bad_lines: str):
         return None, None
 
 
-def _repair_csv_to_df(text: str, header: list[str], delim: str) -> pd.DataFrame:
+def _repair_csv_to_df(text: str, header: List[str], delim: str) -> pd.DataFrame:
     """
     Heuristic repair:
     - If row has fewer fields, right-pad with ""
@@ -402,10 +593,9 @@ def _repair_csv_to_df(text: str, header: list[str], delim: str) -> pd.DataFrame:
     """
     n = len(header)
     reader = csv.reader(io.StringIO(text), delimiter=delim)
-    rows = list(reader)[1:]  # skip original header
+    rows = list(reader)[1:]  # skip header
     fixed = []
     for r in rows:
-        # If completely empty row, skip
         if not any((cell or "").strip() for cell in r):
             continue
         if len(r) < n:
@@ -413,155 +603,36 @@ def _repair_csv_to_df(text: str, header: list[str], delim: str) -> pd.DataFrame:
         elif len(r) > n:
             r = r[:n-1] + [delim.join(r[n-1:])]
         fixed.append([_clean_str(c) for c in r])
-
     df = pd.DataFrame(fixed, columns=_normalize_headers(header))
-    
-    
-    try:
-        repaired_path = "/tmp/repaired_availability.csv"
-        df.to_csv(repaired_path, index=False)
-        print(f"[csv] Saved repaired CSV to {repaired_path}")
-    except Exception as e:
-        print(f"[csv] Could not save repaired CSV: {e}")
-
     return df
 
 
-# ---------------------------
-# Post-processing
-# ---------------------------
-def _postprocess_df(df: pd.DataFrame, required_columns: list[str] | None) -> pd.DataFrame:
-    # Trim whitespace on all strings
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-
-    # Replace common "null" spellings with empty
-    nullish = {"na", "n/a", "null", "none", "nil", "nan"}
-    df = df.replace({c: {v: "" for v in nullish} for c in df.columns}, regex=False)
+def _postprocess_df(df: pd.DataFrame, required_columns: Optional[List[str]]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    # Trim strings
+    df = df.applymap(lambda x: _clean_str(x) if isinstance(x, str) else x)
 
     # Drop fully empty rows
     df = df[~(df.astype(str).apply(lambda r: "".join(r), axis=1).str.strip() == "")]
-
-    # De-duplicate rows
-    before = len(df)
     df = df.drop_duplicates(keep="first").reset_index(drop=True)
-    dropped = before - len(df)
-    if dropped:
-        print(f"[csv] Dropped {dropped} duplicate row(s).")
 
     # Enforce required schema
     if required_columns:
         for col in required_columns:
             if col not in df.columns:
                 df[col] = ""
-        # Reorder to required-first then the rest
-        remainder = [c for c in df.columns if c not in required_columns]
-        df = df[required_columns + remainder]
-
+        # Just put required columns first if present
+        ordered = [c for c in required_columns if c in df.columns]
+        remainder = [c for c in df.columns if c not in ordered]
+        df = df[ordered + remainder]
     return df
 
 
-def _clean_str(s: str) -> str:
-    # Remove invisible control chars, normalize spaces, trim
-    if s is None:
-        return ""
-    s = re.sub(r"[\u200B-\u200D\uFEFF]", "", str(s))  # zero-width chars
-    s = s.replace("\xa0", " ")
-    return s.strip()
-
-
-def find_available(day: str, start_hhmm: str, end_hhmm: str, org: str | None = None):
-    day = day.strip().capitalize()
-    if day not in DAY_COLS:
-        raise ValueError(f"day must be one of {DAY_COLS}")
-
-    s = _to_minutes(start_hhmm)
-    e = _to_minutes(end_hhmm)
-    if s is None or e is None or e <= s:
-        raise ValueError("Bad time window; use HHMM (e.g., 0830 .. 1030) and end > start")
-
-    mode = os.getenv("AVAIL_MODE", "api").lower()
-    if mode == "api":
-        df = _fetch_api_df()
-    else:
-        df = _fetch_csv_df()
-
-    # Normalize headers we need
-    # Guess columns (your sheet shows these exact headers):
-    #   - "First Name" / "Last Name" (or similar)
-    #   - "MS level" (exact)
-    #   - "Academic School" (exact)
-    #   - Day columns: Monday..Friday
-    # Try to map flexible name variants:
-    cols = {c.lower(): c for c in df.columns}
-
-    def col_like(*cands):
-        for c in cands:
-            if c.lower() in cols:
-                return cols[c.lower()]
-        # try startswith match
-        for k in cols:
-            for c in cands:
-                if k.startswith(c.lower()):
-                    return cols[k]
-        return None
-
-    first_col = col_like("First Name", "First", "Given Name", "First name")
-    last_col  = col_like("Last Name", "Last", "Surname", "Family name")
-    ms_col    = col_like("MS level", "MS Level", "MS")
-    school_col= col_like("Academic School", "School", "Campus")
-
-    # If any required columns are missing, fail clearly:
-    missing = [name for name, col in {
-        "first": first_col, "last": last_col, "ms": ms_col
-    }.items() if col is None]
-    if missing:
-        raise RuntimeError(f"Missing expected columns in availability sheet: {missing}. Present: {list(df.columns)}")
-
-    # Make sure day column exists
-    if day not in df.columns:
-        # Try case-insensitive match
-        for c in df.columns:
-            if c.strip().lower() == day.lower():
-                day = c
-                break
-    if day not in df.columns:
-        raise RuntimeError(f"Day column '{day}' not found in sheet. Columns: {list(df.columns)}")
-
-    # Optional org filter (GSU / ULM / LATECH, etc.)
-    if org and school_col and school_col in df.columns:
-        df = df[df[school_col].astype(str).str.contains(org, case=False, na=False)]
-
-    # Keep rows where the window does NOT overlap any busy block
-    ok = []
-    for _, row in df.iterrows():
-        try:
-            if _row_is_free(row, day, s, e):
-                ok.append({
-                    "first": str(row.get(first_col, "")).strip(),
-                    "last":  str(row.get(last_col, "")).strip(),
-                    "ms":    _norm_ms(row.get(ms_col, "")),
-                    # You can expose phone/email too if you wish:
-                    # "email": row.get(col_like("School Email","Email"), ""),
-                    # "phone": row.get(col_like("Phone Number","Phone"), ""),
-                })
-        except Exception:
-            continue
-
-    # Sort by MS level (numeric first)
-    def _ms_key(x):
-        m = re.search(r"\d+", x.get("ms",""))
-        return int(m.group(0)) if m else 99
-    ok.sort(key=_ms_key)
-    return ok
-
-def _fetch_csv_df():
-    url = os.getenv("AVAILABILITY_CSV_URL") or os.getenv("GOOGLE_SHEET_URL")
-    url = _to_csv_export(url or "")
-    print(f"[availability] Using robust CSV fetcher… url={url!r}")
-    return fetch_csv_df_robust(url, required_columns=["First Name","Last Name","MS level","Monday"])
-    """Legacy alias — redirect to robust loader for compatibility."""
-    url = os.getenv("GOOGLE_SHEET_URL")
-    print("[availability] Using robust CSV fetcher…")
-    return fetch_csv_df_robust(url)
-
-
+def _save_repaired_snapshot(df: pd.DataFrame):
+    try:
+        p = "/tmp/repaired_availability.csv"
+        df.to_csv(p, index=False)
+        print(f"[csv] Saved repaired CSV snapshot to {p}")
+    except Exception as e:
+        print(f"[csv] Could not save repaired CSV snapshot: {e}")
