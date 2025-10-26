@@ -32,7 +32,26 @@ def require_admin(view):
 @app.get("/")
 @require_pw
 def index():
-    return render_template_string(open(os.path.join(os.path.dirname(__file__),"templates","index.html"),"r",encoding="utf-8").read())
+    try:
+        # Try the real template file first
+        p = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+        with open(p, "r", encoding="utf-8") as f:
+            html = f.read()
+    except Exception as e:
+        # Fallback: inline minimal HTML so the page always loads
+        html = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>ROTC Tools</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head><body>
+<div class="wrap">
+  <h1>ROTC Tools</h1>
+  <p>Template file missing. Static and APIs should still work.</p>
+  <script src="/static/script.js"></script>
+</div>
+</body></html>"""
+    return render_template_string(html)
+
 
 @app.get("/api/available")
 @require_pw
