@@ -1,4 +1,4 @@
-fimport os, json, re, io, datetime as dt
+import os, json, re, io, datetime as dt
 from functools import wraps
 from flask import Flask, request, jsonify, render_template_string
 from attendance import list_events, read_event_records, leaderboard, list_roster, add_event_and_mark
