@@ -18,5 +18,16 @@
   </div>
   <button type="submit">Write</button>
 </form>
+<hr>
+<h3>Create Today's Column</h3>
+<form method="post" action="{{ url_for('writer_create_today') }}">
+  <div class="grid">
+    <div><label>Suffix (e.g., PT/LAB/Event)</label>
+      <input name="suffix" placeholder="PT"></div>
+  </div>
+  <button type="submit">Add today to both sections</button>
+</form>
+
+<p><a href="{{ url_for('writer_bulk') }}">Go to Bulk Writer</a></p>
 <p class="contrast">Admin password required.</p>
 {% endblock %}
