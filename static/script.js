@@ -1,309 +1,233 @@
-// ROTC Tools frontend wired to your current index.html
-// - Tabs: .tab[data-for] toggles .panel.on
-// - Availability: #day, #a_start, #a_end, #a_go, #a_out
-// - Attendance: #evt_block, #evt_date, #evt_type, #evt_other, #save_att, #rost
-// - Reports: #rep_block, #rep_date, #rep_day_btn, #rep_day_out, #lb_from, #lb_to, #lb_btn, #lb_out
+/* Tabs + modal + API glue + Charts */
 
 (function () {
-  const log = (...a) => console.log("[ui]", ...a);
-  const warn = (...a) => console.warn("[ui]", ...a);
-  const err = (...a) => console.error("[ui]", ...a);
+  const $ = (s, p) => (p || document).querySelector(s);
+  const $$ = (s, p) => Array.from((p || document).querySelectorAll(s));
+  const pw = window.APP_PW || new URLSearchParams(location.search).get("pw") || "";
 
-  // pull pw/admin_pw from URL (?pw=...&admin_pw=...)
-  const url = new URL(location.href);
-  const PW = url.searchParams.get("pw") || "";
-  const ADMIN_PW = url.searchParams.get("admin_pw") || "";
+  // -------------------------- Tabs --------------------------
+  $$(".tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $$(".tab").forEach(b => b.classList.remove("on"));
+      btn.classList.add("on");
+      const tgt = btn.getAttribute("data-for");
+      $$(".panel").forEach(p => p.classList.remove("on"));
+      $("#" + tgt).classList.add("on");
 
-  // -------- utils ----------
-  const qs = (s, r = document) => r.querySelector(s);
-  const qsa = (s, r = document) => Array.from(r.querySelectorAll(s));
-  const esc = (s) =>
-    String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-
-  function getJSON(path, params = {}) {
-    const u = new URL(path, location.origin);
-    if (PW) u.searchParams.set("pw", PW);
-    Object.entries(params).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, v);
-    });
-    log("GET", u.toString());
-    return fetch(u.toString(), { method: "GET", headers: { Accept: "application/json" } })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
-        return r.json();
-      });
-  }
-
-  function postJSON(path, body) {
-    const u = new URL(path, location.origin);
-    log("POST", u.toString(), body);
-    return fetch(u.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    }).then(async (r) => {
-      let t = null;
-      try { t = await r.json(); } catch {}
-      if (!r.ok) {
-        const msg = (t && (t.error || t.message)) || `HTTP ${r.status} ${r.statusText}`;
-        throw new Error(msg);
+      if (tgt === "directory" && !$("#dir_out").dataset.loaded) {
+        loadDirectory();
       }
-      return t || {};
-    });
-  }
-
-  // -------- tabs wiring ----------
-  function wireTabs() {
-    const tabs = qsa(".tabs .tab");
-    const panels = qsa(".panel");
-
-    function show(name) {
-      // toggle button state
-      tabs.forEach((b) => {
-        const on = b.getAttribute("data-for") === name;
-        b.classList.toggle("on", on);
-        b.setAttribute("aria-selected", on ? "true" : "false");
-      });
-      // toggle panels
-      panels.forEach((p) => p.classList.toggle("on", p.id === name));
-    }
-
-    tabs.forEach((b) => {
-      b.addEventListener("click", (e) => {
-        e.preventDefault();
-        const name = b.getAttribute("data-for");
-        if (name) show(name);
-      });
-    });
-
-    // initial: keep whatever has .on, else default to availability
-    const current = qs(".panel.on")?.id || "availability";
-    show(current);
-  }
-
-  // -------- availability ----------
-  function wireAvailability() {
-    const daySel = qs("#day");
-    const sInp = qs("#a_start");
-    const eInp = qs("#a_end");
-    const btn = qs("#a_go");
-    const out = qs("#a_out");
-
-    if (!daySel || !sInp || !eInp || !btn || !out) {
-      log("availability controls not found, skipping");
-      return;
-    }
-
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const day = (daySel.value || "").trim();
-      const start = (sInp.value || "0900").trim();
-      const end = (eInp.value || "1030").trim();
-      out.innerHTML = `<div class="muted">Searching…</div>`;
-      try {
-        const data = await getJSON("/api/available", { day, start, end });
-        if (!data.ok) throw new Error(data.error || "Unknown error");
-        const rows = data.rows || [];
-        if (!rows.length) {
-          out.innerHTML = `<div class="muted">No cadets free for that window.</div>`;
-          return;
-        }
-        const html = [
-          `<table class="table"><thead><tr><th>First</th><th>Last</th><th>MS</th></tr></thead><tbody>`,
-          ...rows.map((r) => `<tr><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.ms)}</td></tr>`),
-          `</tbody></table>`,
-        ].join("");
-        out.innerHTML = html;
-      } catch (ex) {
-        err("availability error:", ex);
-        out.innerHTML = `<div class="error">Availability failed: ${esc(ex.message)}</div>`;
+      if (tgt === "reports" && !window.__charts_loaded__) {
+        refreshCharts();  // auto-render on first open
+        window.__charts_loaded__ = true;
       }
     });
-  }
-
-  // -------- attendance (roster + save) ----------
-  function wireAttendance() {
-    const blockSel = qs("#evt_block");
-    const dateInp = qs("#evt_date");
-    const typeSel = qs("#evt_type");
-    const otherInp = qs("#evt_other");
-    const saveBtn = qs("#save_att");
-    const rostTable = qs("#rost tbody");
-
-    if (!blockSel || !dateInp || !typeSel || !saveBtn || !rostTable) {
-      log("attendance controls not found, skipping");
-      return;
-    }
-
-    async function loadRoster() {
-      const label = (blockSel.value || "gsu").toLowerCase();
-      rostTable.innerHTML = `<tr><td colspan="5" class="muted">Loading roster…</td></tr>`;
-      try {
-        const data = await getJSON("/api/roster", { label });
-        if (!data.ok) throw new Error(data.error || "Unknown error");
-        const rows = data.rows || [];
-        if (!rows.length) {
-          rostTable.innerHTML = `<tr><td colspan="5" class="muted">No roster entries.</td></tr>`;
-          return;
-        }
-        rostTable.innerHTML = rows
-          .map((r, i) => {
-            const name = [r.first, r.last].filter(Boolean).join(" ");
-            const ms = r.ms || "";
-            return `
-              <tr data-i="${i}">
-                <td>${esc(name)}</td>
-                <td>${esc(ms)}</td>
-                <td><input type="checkbox" class="present"></td>
-                <td><input type="checkbox" class="ftr"></td>
-                <td><input type="checkbox" class="excused"></td>
-              </tr>
-            `;
-          })
-          .join("");
-      } catch (ex) {
-        err("roster load error:", ex);
-        rostTable.innerHTML = `<tr><td colspan="5" class="error">Roster error: ${esc(ex.message)}</td></tr>`;
-      }
-    }
-
-    blockSel.addEventListener("change", loadRoster);
-    // initial load
-    loadRoster();
-
-    // Save attendance -> POST /api/att/add_event_and_mark  (requires admin_pw)
-    saveBtn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const label = (blockSel.value || "gsu").toLowerCase();
-      const date = (dateInp.value || "").trim();
-      const event_type = (typeSel.value || "PT").toUpperCase();
-      const event_other = (otherInp.value || "").trim();
-
-      if (!date) {
-        alert("Enter a date (e.g., 8/27/2025)");
-        return;
-      }
-      if (!ADMIN_PW) {
-        alert("This action requires ?admin_pw=… in the URL.");
-        return;
-      }
-
-      // collect marks from table
-      const marks = qsa("#rost tbody tr").map((tr) => {
-        const tds = tr.querySelectorAll("td");
-        const name = tds[0]?.textContent?.trim() || "";
-        return {
-          name,
-          present: tr.querySelector(".present")?.checked || false,
-          ftr: tr.querySelector(".ftr")?.checked || false,
-          excused: tr.querySelector(".excused")?.checked || false,
-        };
-      });
-
-      try {
-        const body = { admin_pw: ADMIN_PW, label, date, event_type, event_other, marks };
-        const res = await postJSON("/api/att/add_event_and_mark", body);
-        alert(`Saved: ${res.header || "event"} (${(res.updated_cells || []).length || "OK"})`);
-      } catch (ex) {
-        err("save attendance error:", ex);
-        alert(`Save failed: ${ex.message}`);
-      }
-    });
-  }
-
-  // -------- reports ----------
-  function wireReports() {
-    const blockSel = qs("#rep_block");
-    const dateInp = qs("#rep_date");
-    const dayBtn = qs("#rep_day_btn");
-    const dayOut = qs("#rep_day_out");
-
-    const lbFrom = qs("#lb_from");
-    const lbTo = qs("#lb_to");
-    const lbBtn = qs("#lb_btn");
-    const lbOut = qs("#lb_out");
-
-    // day view
-    if (blockSel && dateInp && dayBtn && dayOut) {
-      dayBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const label = (blockSel.value || "gsu").toLowerCase();
-        const date = (dateInp.value || "").trim();
-        if (!date) {
-          dayOut.innerHTML = `<div class="muted">Enter a date.</div>`;
-          return;
-        }
-        dayOut.innerHTML = `<div class="muted">Loading…</div>`;
-        try {
-          const data = await getJSON("/api/att/day", { label, date });
-          if (!data.ok) throw new Error(data.error || "Unknown error");
-          const recs = data.records || [];
-          const head = data.header || "";
-          if (!recs.length) {
-            dayOut.innerHTML = `<div class="muted">No records for ${esc(head || date)}.</div>`;
-            return;
-          }
-          const html = [
-            `<div class="h3">${esc(head)}</div>`,
-            `<table class="table"><thead><tr><th>Name</th><th>Present</th><th>FTR</th><th>Excused</th></tr></thead><tbody>`,
-            ...recs.map((r) => `<tr><td>${esc(r.name || "")}</td><td>${r.present ? "✓" : ""}</td><td>${r.ftr ? "✓" : ""}</td><td>${r.excused ? "✓" : ""}</td></tr>`),
-            `</tbody></table>`,
-          ].join("");
-          dayOut.innerHTML = html;
-        } catch (ex) {
-          err("day view error:", ex);
-          dayOut.innerHTML = `<div class="error">Day view failed: ${esc(ex.message)}</div>`;
-        }
-      });
-    }
-
-    // leaderboard
-    if (lbFrom && lbTo && lbBtn && lbOut) {
-      lbBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const label = (blockSel?.value || "gsu").toLowerCase();
-        const dfrom = (lbFrom.value || "").trim();
-        const dto = (lbTo.value || "").trim();
-        lbOut.innerHTML = `<div class="muted">Building…</div>`;
-        try {
-          const data = await getJSON("/api/att/leaderboard", { label, from: dfrom, to: dto, top: 50 });
-          if (!data.ok) throw new Error(data.error || "Unknown error");
-          const rows = data.rows || data.leaderboard || [];
-          if (!rows.length) {
-            lbOut.innerHTML = `<div class="muted">No data in range.</div>`;
-            return;
-          }
-          lbOut.innerHTML = `
-            <table class="table">
-              <thead><tr><th>#</th><th>Name</th><th>Pts</th></tr></thead>
-              <tbody>
-                ${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name || "")}</td><td>${esc(r.points ?? r.pts ?? "")}</td></tr>`).join("")}
-              </tbody>
-            </table>`;
-        } catch (ex) {
-          err("leaderboard error:", ex);
-          lbOut.innerHTML = `<div class="error">Leaderboard failed: ${esc(ex.message)}</div>`;
-        }
-      });
-    }
-  }
-
-  // -------- boot ----------
-  document.addEventListener("DOMContentLoaded", () => {
-    try {
-      wireTabs();
-      wireAvailability();
-      wireAttendance();
-      wireReports();
-      log("initialized");
-      if (!PW) warn("No ?pw=… provided; API calls will 401.");
-    } catch (ex) {
-      err("init failed:", ex);
-    }
   });
+
+  // ------------------------- Modal --------------------------
+  const modal = $("#modal");
+  const mclose = $("#mclose");
+  if (mclose) mclose.onclick = () => (modal.style.display = "none");
+
+  function showPersonKV(title, obj) {
+    $("#mtitle").textContent = title;
+    const kv = $("#kvgrid");
+    kv.innerHTML = Object.entries(obj).map(([k,v]) => {
+      if (typeof v === "object" && v !== null) {
+        return `<div class="kv"><b>${k}</b>: <pre>${JSON.stringify(v, null, 2)}</pre></div>`;
+      }
+      return `<div class="kv"><b>${k}</b>: ${v}</div>`;
+    }).join("");
+    modal.style.display = "block";
+  }
+
+  // -------------------- Availability Search -----------------
+  const go = $("#a_go");
+  if (go) {
+    go.onclick = async () => {
+      const out = $("#a_out");
+      out.innerHTML = "Searching…";
+      const day = $("#day").value;
+      const start = $("#a_start").value.trim();
+      const end = $("#a_end").value.trim();
+      try {
+        const r = await fetch(`/api/available?pw=${pw}&day=${encodeURIComponent(day)}&start=${start}&end=${end}`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "bad response");
+        let html = "<table class='table'><thead><tr><th>Name</th><th>MS</th></tr></thead><tbody>";
+        for (const row of j.rows) {
+          const full = `${row.first} ${row.last}`.trim();
+          html += `<tr><td><a href="#" class="plink" data-name="${full}">${full}</a></td><td>${row.ms||""}</td></tr>`;
+        }
+        html += "</tbody></table>";
+        out.innerHTML = html;
+        $$(".plink", out).forEach(a => a.onclick = async (ev) => {
+          ev.preventDefault();
+          const name = ev.target.dataset.name;
+          const r2 = await fetch(`/api/cadet/details?pw=${pw}&name=${encodeURIComponent(name)}`);
+          const j2 = await r2.json();
+          if (!j2.ok) throw new Error(j2.error);
+          showPersonKV(name, j2.person);
+        });
+      } catch (e) {
+        out.innerHTML = `<div class="err">Error: ${e.message}</div>`;
+      }
+    };
+  }
+
+  // ------------------------- Directory ----------------------
+  async function loadDirectory() {
+    const out = $("#dir_out");
+    out.innerHTML = "Loading directory…";
+    try {
+      const r = await fetch(`/api/cadet/list?pw=${pw}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "bad response");
+
+      let html = `
+        <div class="row">
+          <input id="dir_filter" class="input" placeholder="Search name… (type to filter)">
+        </div>
+        <table class='table' id='dir_tbl'>
+          <thead><tr><th>Name</th><th>MS</th></tr></thead><tbody>`;
+      for (const c of j.rows) {
+        const full = `${c.first} ${c.last}`.trim();
+        html += `<tr><td><a href="#" class="plink" data-name="${full}">${full}</a></td><td>${c.ms||""}</td></tr>`;
+      }
+      html += "</tbody></table>";
+      out.innerHTML = html;
+      out.dataset.loaded = "1";
+
+      $("#dir_filter").addEventListener("input", (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        $$("#dir_tbl tbody tr").forEach(tr => {
+          const nm = tr.children[0].innerText.toLowerCase();
+          tr.style.display = nm.includes(q) ? "" : "none";
+        });
+      });
+
+      $$(".plink", out).forEach(a => a.onclick = async (ev) => {
+        ev.preventDefault();
+        const name = ev.target.dataset.name;
+        const r2 = await fetch(`/api/cadet/details?pw=${pw}&name=${encodeURIComponent(name)}`);
+        const j2 = await r2.json();
+        if (!j2.ok) throw new Error(j2.error);
+        showPersonKV(name, j2.person);
+      });
+    } catch (e) {
+      out.innerHTML = `<div class="err">Directory error: ${e.message}</div>`;
+    }
+  }
+
+  // -------------------------- Reports (Text) ----------------
+  const repBtn = $("#rep_day_btn");
+  if (repBtn) {
+    repBtn.onclick = async () => {
+      const blk = $("#rep_block").value;
+      const date = $("#rep_date").value.trim();
+      const out = $("#rep_day_out");
+      out.textContent = "Loading day…";
+      try {
+        const r = await fetch(`/api/att/day?pw=${pw}&label=${blk}&date=${encodeURIComponent(date)}`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "bad response");
+        out.textContent = j.text || "(no data)";
+      } catch (e) {
+        out.textContent = `Day error: ${e.message}`;
+      }
+    };
+  }
+
+  const lbBtn = $("#lb_btn");
+  if (lbBtn) {
+    lbBtn.onclick = async () => {
+      const blk = $("#rep_block").value; // reuse same block selector
+      const from = $("#lb_from").value.trim();
+      const to   = $("#lb_to").value.trim();
+      const out  = $("#lb_out");
+      out.textContent = "Building leaderboard…";
+      try {
+        const r = await fetch(`/api/att/leaderboard?pw=${pw}&label=${blk}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&top=10&mode=text`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || "bad response");
+        out.textContent = j.text || "(no data)";
+      } catch (e) {
+        out.textContent = `Leaderboard error: ${e.message}`;
+      }
+    };
+  }
+
+  // ------------------------------ Charts --------------------
+  let chartTotals = null;
+  let chartMS = null;
+
+  async function refreshCharts() {
+    const blk = $("#rep_block").value;
+    const from = $("#ch_from").value.trim();
+    const to   = $("#ch_to").value.trim();
+    try {
+      const r = await fetch(`/api/att/charts?pw=${pw}&label=${blk}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "bad response");
+      renderCharts(j);
+    } catch (e) {
+      console.error("charts load error:", e);
+      // show inline message
+      const ctx1 = $("#chart_totals").getContext("2d");
+      ctx1.font = "14px sans-serif";
+      ctx1.fillText("Charts error: " + e.message, 10, 20);
+    }
+  }
+
+  function renderCharts(data) {
+    const labels = data.labels || [];
+    const totals = data.totals || {present:[], ftr:[], excused:[]};
+    const byms   = data.by_ms || {"MS1":[],"MS2":[],"MS3":[],"MS4":[],"MS5":[]};
+
+    // Totals chart
+    if (chartTotals) chartTotals.destroy();
+    chartTotals = new Chart($("#chart_totals"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Present (total)", data: totals.present },
+          { label: "FTR (total)",     data: totals.ftr },
+          { label: "Excused (total)", data: totals.excused }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "top" }, title: { display: true, text: "Weekly Totals" } },
+        scales: { x: { ticks: { autoSkip: true, maxTicksLimit: 10 } } }
+      }
+    });
+
+    // MS chart
+    if (chartMS) chartMS.destroy();
+    chartMS = new Chart($("#chart_ms"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "MS1 Present", data: byms.MS1 },
+          { label: "MS2 Present", data: byms.MS2 },
+          { label: "MS3 Present", data: byms.MS3 },
+          { label: "MS4 Present", data: byms.MS4 },
+          { label: "MS5 Present", data: byms.MS5 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "top" }, title: { display: true, text: "Weekly Present by MS" } },
+        scales: { x: { ticks: { autoSkip: true, maxTicksLimit: 10 } } }
+      }
+    });
+  }
+
+  const chBtn = $("#ch_refresh");
+  if (chBtn) chBtn.onclick = refreshCharts;
+
 })();
