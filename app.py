@@ -1,248 +1,313 @@
-"""
-app.py — ROTC Attendance + Availability Web Service (hardened)
-Joseph Waguespack / KiwiAutoTech 2025 Edition
-"""
-
-import os, io, json, re, datetime as dt, traceback, logging
+import os, json, io, re, datetime as dt, logging, traceback
 from functools import wraps
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
+from flask import Flask, request, jsonify, render_template_string
 
-# --- imports from modules ---
-from attendance import (
-    list_events, read_event_records, leaderboard,
-    list_roster, add_event_and_mark
+# --- Logging -----------------------------------------------------------
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-from availability import find_available, person_info
-
-# --- LOGGING CONFIG ---
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
 log = logging.getLogger("app")
 
-# --- FLASK INIT ---
+# --- Secrets -----------------------------------------------------------
+APP_PASSWORD   = (os.getenv("APP_PASSWORD") or "").strip()
+ADMIN_PASSWORD = (os.getenv("ADMIN_PASSWORD") or "").strip()
+
+# --- Flask -------------------------------------------------------------
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
-# --- ENV VARS ---
-APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
-
-# --- AUTH DECORATORS ---
+# ------------------------------ Auth ----------------------------------
 def require_pw(view):
     @wraps(view)
-    def _wrap(*a, **k):
-        pw = (
-            request.args.get("pw")
-            or request.headers.get("X-APP-PW")
-            or (request.get_json(silent=True) or {}).get("pw", "")
-        )
+    def _w(*a, **k):
+        pw = request.args.get("pw") or request.headers.get("X-APP-PW") or ""
         if APP_PASSWORD and pw != APP_PASSWORD:
-            log.warning(f"Unauthorized access attempt from {request.remote_addr}")
+            log.warning("Unauthorized access attempt from %s", request.remote_addr)
             return "<h1>Locked</h1><p>Append ?pw=YOURPASSWORD</p>", 401
         return view(*a, **k)
-    return _wrap
+    return _w
 
 def require_admin(view):
     @wraps(view)
-    def _wrap(*a, **k):
-        pw = (
-            request.args.get("admin_pw")
-            or (request.get_json(silent=True) or {}).get("admin_pw", "")
-        )
-        if ADMIN_PASSWORD and pw != ADMIN_PASSWORD:
-            log.warning(f"Admin auth failed for {request.remote_addr}")
+    def _w(*a, **k):
+        body = request.get_json(silent=True) or {}
+        admin_pw = request.args.get("admin_pw") or body.get("admin_pw") or ""
+        if ADMIN_PASSWORD and admin_pw != ADMIN_PASSWORD:
+            log.warning("Admin auth failed for %s", request.remote_addr)
             return jsonify(ok=False, error="admin auth failed"), 401
         return view(*a, **k)
-    return _wrap
+    return _w
 
-# --- INDEX ROUTE ---
-@app.route("/", methods=["GET", "HEAD"])
+# ---------------------------- Index/Static -----------------------------
+@app.get("/")
 @require_pw
 def index():
-    if request.method == "HEAD":
-        return ("", 200)
-    html_path = os.path.join(app.root_path, "templates", "index.html")
     try:
-        if os.path.exists(html_path):
-            with open(html_path, "r", encoding="utf-8") as f:
-                return render_template_string(f.read())
-        else:
-            log.warning("Missing templates/index.html — serving fallback UI.")
-            return """<!doctype html><html><head>
-<meta charset="utf-8"><title>ROTC Tools</title>
+        p = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+        with open(p, "r", encoding="utf-8") as f:
+            html = f.read()
+    except Exception:
+        html = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROTC Tools</title>
 <link rel="stylesheet" href="/static/styles.css">
-</head><body><div class="wrap">
+</head>
+<body>
+<div class="wrap">
 <h1>ROTC Tools</h1>
-<p>Template missing. Static and APIs should still function.</p>
-<script src="/static/script.js"></script></div></body></html>"""
-    except Exception as e:
-        log.exception("Error rendering index:")
-        return f"<pre>Fatal error: {e}</pre>", 500
+<div class="tabs">
+  <button class="tab on" data-for="availability">Availability</button>
+  <button class="tab" data-for="attendance">Attendance</button>
+  <button class="tab" data-for="reports">Reports</button>
+  <button class="tab" data-for="directory">Cadet Directory</button>
+</div>
 
-# --- API: Availability ---
-@app.route("/api/available", methods=["GET", "HEAD"])
+<section id="availability" class="panel on">
+  <div class="row">
+    <label>Day</label>
+    <select id="day"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option></select>
+    <label>Start</label><input id="a_start" value="0900">
+    <label>End</label><input id="a_end" value="1030">
+    <button id="a_go" class="btn">Search</button>
+  </div>
+  <div id="a_out"></div>
+  <div id="modal" class="modal"><div class="card">
+    <div class="row"><h3 id="mtitle" style="flex:1">Details</h3><button id="mclose" class="btn">Close</button></div>
+    <div id="kvgrid" class="kvgrid"></div>
+  </div></div>
+</section>
+
+<section id="attendance" class="panel">
+  <div class="row">
+    <label>Block</label><select id="evt_block"><option value="gsu">GSU</option><option value="ulm">ULM</option></select>
+    <label>Date</label><input id="evt_date" placeholder="8/27/2025">
+    <label>Type</label><select id="evt_type"><option>PT</option><option>LAB</option><option value="OTHER">OTHER</option></select>
+    <input id="evt_other" placeholder="Other name">
+    <button id="save_att" class="btn primary">Save attendance</button>
+  </div>
+  <table id="rost" class="table"><thead><tr><th>Name</th><th>MS</th><th>Present</th><th>FTR</th><th>Excused</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section id="reports" class="panel">
+  <h3>Day view</h3>
+  <div class="row">
+    <label>Block</label><select id="rep_block"><option value="gsu">GSU</option><option value="ulm">ULM</option></select>
+    <label>Date</label><input id="rep_date" placeholder="8/27/2025">
+    <button id="rep_day_btn" class="btn">Load day</button>
+  </div>
+  <pre id="rep_day_out"></pre>
+
+  <h3 style="margin-top:18px">Leaderboard</h3>
+  <div class="row">
+    <label>From</label><input id="lb_from" placeholder="8/1/2025">
+    <label>To</label><input id="lb_to" placeholder="10/31/2025">
+    <button id="lb_btn" class="btn">Build</button>
+  </div>
+  <pre id="lb_out"></pre>
+
+  <h3 style="margin-top:18px">Charts (weekly)</h3>
+  <div class="row">
+    <label>Range</label>
+    <input id="ch_from" placeholder="8/1/2025">
+    <input id="ch_to" placeholder="10/31/2025">
+    <button id="ch_refresh" class="btn">Refresh charts</button>
+  </div>
+  <div class="chartwrap"><canvas id="chart_totals" height="140"></canvas></div>
+  <div class="chartwrap"><canvas id="chart_ms" height="140"></canvas></div>
+</section>
+
+<section id="directory" class="panel">
+  <div class="row"><button id="load_dir" class="btn">Load Cadet Directory</button></div>
+  <div id="dir_out"></div>
+</section>
+</div>
+<script>window.APP_PW=new URLSearchParams(location.search).get("pw")||"";</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/static/script.js"></script>
+</body></html>"""
+    return render_template_string(html)
+
+# -------------------------- Availability API --------------------------
+from availability import (
+    search_availability, person_info, list_all_cadets, cadet_details
+)
+
+@app.get("/api/available")
 @require_pw
 def api_available():
-    if request.method == "HEAD":
-        return ("", 200)
-    day_map = {"Mon":"Monday","Tue":"Tuesday","Wed":"Wednesday","Thu":"Thursday","Fri":"Friday"}
-    day = day_map.get(request.args.get("day","Mon"), request.args.get("day","Mon"))
-    start = request.args.get("start","0900")
-    end = request.args.get("end","1000")
-    org = request.args.get("org")
     try:
-        rows = find_available(day, start, end, org=org)
-        log.debug(f"/api/available -> {len(rows)} results for {day} {start}-{end}")
+        day   = request.args.get("day", "Monday")
+        start = request.args.get("start", "0900")
+        end   = request.args.get("end", "1030")
+        rows  = search_availability(day, start, end)
         return jsonify(ok=True, rows=rows)
     except Exception as e:
-        log.exception("api_available failed:")
+        log.exception("availability failed")
         return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 400
 
-# --- API: Person ---
-@app.route("/api/person", methods=["GET", "HEAD"])
+@app.get("/api/person")
 @require_pw
 def api_person():
-    if request.method == "HEAD":
-        return ("", 200)
-    q = request.args.get("q", "")
-    org = request.args.get("org")
     try:
-        person = person_info(q, org=org)
-        return jsonify(ok=True, person=person)
+        query = request.args.get("q", "")
+        org   = request.args.get("org")
+        data  = person_info(query, org=org)
+        return jsonify(ok=True, person=data)
     except Exception as e:
-        log.exception("api_person failed:")
         return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 400
 
-# --- API: Roster ---
-@app.route("/api/roster", methods=["GET", "HEAD"])
+@app.get("/api/cadet/list")
 @require_pw
-def api_roster():
-    if request.method == "HEAD":
-        return ("", 200)
-    label = (request.args.get("label") or "gsu").lower()
+def api_cadet_list():
     try:
-        rows = list_roster(label)
-        return jsonify(ok=True, rows=rows)
+        return jsonify(ok=True, rows=list_all_cadets())
     except Exception as e:
-        log.exception("api_roster failed:")
-        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 400
+        log.exception("cadet list failed")
+        return jsonify(ok=False, error=str(e)), 400
 
-# --- API: Attendance Add + Mark ---
-@app.route("/api/att/add_event_and_mark", methods=["POST", "HEAD"])
+@app.get("/api/cadet/details")
+@require_pw
+def api_cadet_details():
+    try:
+        name = request.args.get("name","")
+        return jsonify(ok=True, person=cadet_details(name))
+    except Exception as e:
+        log.exception("cadet details failed")
+        return jsonify(ok=False, error=str(e)), 400
+
+# --------------------------- Attendance API ---------------------------
+from attendance import (
+    list_roster, list_events, read_event_records,
+    add_event_and_mark, leaderboard, render_leaderboard_text,
+    day_text_report, charts_weekly
+)
+
+@app.get("/api/att/roster")
+@require_pw
+def api_att_roster():
+    try:
+        label = (request.args.get("label") or "gsu").lower()
+        return jsonify(ok=True, rows=list_roster(label))
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 400
+
+@app.post("/api/att/add_event_and_mark")
 @require_admin
 def api_att_add_event_and_mark():
-    if request.method == "HEAD":
-        return ("", 200)
+    body = request.get_json(force=True)
+    date = (body.get("date","") or "").trim()
+    event_type  = (body.get("event_type","PT") or "PT").strip().upper()
+    event_other = (body.get("event_other","") or "").strip()
+    label = (body.get("label") or "gsu").lower()
+    marks = body.get("marks") or []
+    if not date:
+        return jsonify(ok=False, error="date required"), 400
+    if event_type not in ("PT","LAB","OTHER"):
+        return jsonify(ok=False, error="bad event_type"), 400
+    header = f"{date} + {(event_other if event_type=='OTHER' else event_type)}"
     try:
-        body = request.get_json(force=True)
-        date = body.get("date","").strip()
-        etype = (body.get("event_type","PT") or "PT").strip().upper()
-        other = (body.get("event_other","") or "").strip()
-        label = (body.get("label") or "gsu").lower()
-        marks = body.get("marks") or []
-        if not date: return jsonify(ok=False, error="date required"), 400
-        if etype not in ("PT","LAB","OTHER"): return jsonify(ok=False, error="bad event_type"), 400
-        header = f"{date} + {(other if etype=='OTHER' else etype)}"
         updated = add_event_and_mark(label, header, marks)
         return jsonify(ok=True, header=header, updated_cells=updated)
     except Exception as e:
-        log.exception("add_event_and_mark failed:")
-        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 400
+        return jsonify(ok=False, error=str(e)), 400
 
-# --- API: Events list ---
-@app.route("/api/att/events", methods=["GET", "HEAD"])
+@app.get("/api/att/events")
 @require_pw
 def api_att_events():
-    if request.method == "HEAD": return ("", 200)
     label = (request.args.get("label") or "gsu").lower()
     return jsonify(ok=True, events=list_events(label))
 
-# --- API: Attendance Day ---
-@app.route("/api/att/day", methods=["GET", "HEAD"])
+@app.get("/api/att/day")
 @require_pw
 def api_att_day():
-    if request.method == "HEAD": return ("", 200)
-    label = (request.args.get("label") or "gsu").lower()
-    date = request.args.get("date","").strip()
-    for e in list_events(label):
-        if e["date"] == date:
-            return jsonify(ok=True, header=e["header"], records=read_event_records(label, e["col"]))
-    return jsonify(ok=False, error="no event for that date"), 404
+    try:
+        label = (request.args.get("label") or "gsu").lower()
+        date  = (request.args.get("date") or "").strip()
+        txt   = day_text_report(label, date)
+        return jsonify(ok=True, text=txt)
+    except Exception as e:
+        log.exception("day report failed")
+        return jsonify(ok=False, error=str(e)), 400
 
-# --- API: Leaderboard ---
-@app.route("/api/att/leaderboard", methods=["GET", "HEAD"])
+@app.get("/api/att/leaderboard")
 @require_pw
 def api_att_leaderboard():
-    if request.method == "HEAD": return ("", 200)
-    label = (request.args.get("label") or "gsu").lower()
-    dfrom = request.args.get("from","")
-    dto = request.args.get("to","")
     try:
+        label = (request.args.get("label") or "gsu").lower()
+        dfrom = request.args.get("from","")
+        dto   = request.args.get("to","")
+        mode  = (request.args.get("mode") or "json").lower()
+        top   = int(request.args.get("top","10"))
         d1 = dt.datetime.strptime(dfrom,"%m/%d/%Y").date() if dfrom else None
         d2 = dt.datetime.strptime(dto,"%m/%d/%Y").date() if dto else None
-        data = leaderboard(label, d1, d2, top=int(request.args.get("top","50")))
+        data = leaderboard(label, d1, d2, top=top)
+        if mode == "text":
+            return jsonify(ok=True, text=render_leaderboard_text(data))
         return jsonify(ok=True, **data)
     except Exception as e:
-        log.exception("leaderboard failed:")
-        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 400
+        log.exception("leaderboard failed")
+        return jsonify(ok=False, error=str(e)), 400
 
-# --- COMPATIBILITY ROUTES ---
-@app.route("/api/attendance/roster", methods=["GET", "HEAD"])
+@app.get("/api/att/charts")
 @require_pw
-def compat_roster(): return api_roster()
-
-@app.route("/api/attendance/save", methods=["POST", "HEAD"])
-@require_admin
-def compat_save(): return api_att_add_event_and_mark()
-
-@app.route("/api/reports/leaderboard", methods=["GET", "HEAD"])
-@require_pw
-def compat_lb(): return api_att_leaderboard()
-
-# --- DEBUG STATIC CHECK ---
-@app.route("/api/debug/static")
-@require_pw
-def debug_static():
-    out = {}
-    for name in ["script.js","styles.css"]:
-        p = os.path.join(app.static_folder, name)
-        out[name] = {"exists": os.path.exists(p), "size": os.path.getsize(p) if os.path.exists(p) else 0}
-    return jsonify(ok=True, static_folder=app.static_folder, files=out)
-
-# --- HEALTH + ENV CHECK ---
-@app.route("/api/envcheck")
-def envcheck():
-    out = {"have":{}, "errors":{}, "service_account_email": None}
-    keys = ["APP_PASSWORD","ADMIN_PASSWORD","GOOGLE_SHEET_URL","SPREADSHEET_ID","WORKSHEET_NAME",
-            "GSU_HEADER_ROW","ULM_HEADER_ROW","GOOGLE_SERVICE_ACCOUNT_JSON","GOOGLE_SERVICE_ACCOUNT_JSON_PATH"]
-    for k in keys: out["have"][k] = bool(os.getenv(k))
-    # Try parse creds
+def api_att_charts():
     try:
-        info = None
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
-            with open(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"),"r",encoding="utf-8") as f: info=json.load(f)
-        else:
-            info=json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON","{}"))
-        out["service_account_email"]=info.get("client_email")
+        label = (request.args.get("label") or "gsu").lower()
+        dfrom = request.args.get("from","")
+        dto   = request.args.get("to","")
+        d1 = dt.datetime.strptime(dfrom,"%m/%d/%Y").date() if dfrom else None
+        d2 = dt.datetime.strptime(dto,"%m/%d/%Y").date() if dto else None
+        data = charts_weekly(label, d1, d2)  # cached
+        return jsonify(ok=True, **data)
     except Exception as e:
-        out["errors"]["creds_parse"]=f"{type(e).__name__}: {e}"
-    # Try sheet fetch
+        log.exception("charts failed")
+        return jsonify(ok=False, error=str(e)), 400
+
+# ----------------------------- Health/Diag -----------------------------
+@app.get("/api/envcheck")
+def envcheck():
+    out = {
+        "have": {
+            "APP_PASSWORD": bool(os.getenv("APP_PASSWORD")),
+            "ADMIN_PASSWORD": bool(os.getenv("ADMIN_PASSWORD")),
+            "GOOGLE_SHEET_URL": bool(os.getenv("GOOGLE_SHEET_URL")),
+            "SPREADSHEET_ID": bool(os.getenv("SPREADSHEET_ID")),
+            "WORKSHEET_NAME": bool(os.getenv("WORKSHEET_NAME")),
+            "GSU_HEADER_ROW": bool(os.getenv("GSU_HEADER_ROW")),
+            "ULM_HEADER_ROW": bool(os.getenv("ULM_HEADER_ROW")),
+            "GOOGLE_SERVICE_ACCOUNT_JSON": bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")),
+            "GOOGLE_SERVICE_ACCOUNT_JSON_PATH": bool(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")),
+        },
+        "service_account_email": None,
+        "errors": {}
+    }
+    try:
+        if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH"):
+            p = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+            with open(p, "r", encoding="utf-8") as f:
+                out["service_account_email"] = json.load(f)["client_email"]
+        elif os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+            out["service_account_email"] = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))["client_email"]
+    except Exception as e:
+        out["errors"]["creds_parse"] = f"{type(e).__name__}: {e}"
+
     try:
         import requests
-        url=os.getenv("GOOGLE_SHEET_URL")
+        url = os.getenv("GOOGLE_SHEET_URL")
         if url:
-            r=requests.get(url,timeout=15)
-            out["availability_http"]={"status":r.status_code,"ok":r.ok,"len":len(r.text)}
+            r = requests.get(url, timeout=15)
+            out["availability_http"] = {"status": r.status_code, "ok": r.ok, "len": len(r.text)}
         else:
-            out["availability_http"]={"status":None,"ok":False,"len":0}
+            out["availability_http"] = {"status": None, "ok": False, "len": 0}
     except Exception as e:
-        out["errors"]["availability_http"]=f"{type(e).__name__}: {e}"
-    return jsonify(out)
+        out["errors"]["availability_http"] = f"{type(e).__name__}: {e}"
+
+    return out
 
 @app.get("/healthz")
-def healthz(): return "ok",200
+def healthz():
+    return "ok", 200
 
-# --- MAIN ---
 if __name__ == "__main__":
-    port = int(os.getenv("PORT","5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")), debug=os.getenv("FLASK_ENV")=="development")
 
