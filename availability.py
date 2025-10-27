@@ -207,61 +207,249 @@ def _fetch_avail_df() -> pd.DataFrame:
 # Public API
 # =============================================================================
 
-def person_info(query: str, org: Optional[str] = None) -> Dict[str, str]:
+def person_info(query: str, org: str | None = None):
     """
-    query can be an email or 'First Last'. Returns a dict of fields.
+    Ultra-robust cadet lookup that tolerates:
+      - long, multi-line, quoted Google Form headers
+      - punctuation, accents/diacritics, smart quotes
+      - case/space differences
+      - partial names and partial emails
+      - 'First Last', 'Last, First', initials, etc.
+    Returns primary fields + a big 'extras' dict with every other column
+    you enumerated (including the 5 weekday busy columns).
     """
+    import logging, unicodedata
+
+    log = logging.getLogger("availability.person_info")
+
+    # ---------- text normalization helpers ----------
+    def _norm_text(s: str) -> str:
+        """Lowercase, fold accents, collapse whitespace, strip punctuation-like."""
+        if s is None:
+            return ""
+        s = str(s)
+        # unify smart quotes / dashes / newlines
+        s = (s.replace("\u2019", "'").replace("\u2018", "'")
+               .replace("\u201c", '"').replace("\u201d", '"')
+               .replace("\u2013", "-").replace("\u2014", "-")
+               .replace("\r\n", " ").replace("\n", " "))
+        # fold diacritics
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+        # lowercase
+        s = s.lower()
+        # collapse whitespace
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _canon_key(s: str) -> str:
+        """Normalized key used to match headers — letters/numbers/spaces only."""
+        s = _norm_text(s)
+        # keep alnum + space only, drop the rest (quotes, ?, (, ), :, etc.)
+        s = re.sub(r"[^a-z0-9 ]+", "", s)
+        # collapse spaces again
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _initial(s: str) -> str:
+        s = _norm_text(s)
+        return s[0] if s else ""
+
+    # ---------- load data ----------
     df = _fetch_avail_df()
 
-    # Resolve flexible columns
-    first_c  = _col(df, "First Name", "First", "First name")
-    last_c   = _col(df, "Last Name", "Last", "Surname", "Family name")
-    email_c  = _col(df, "School Email", "Email")
-    phone_c  = _col(df, "Phone Number", "Phone")
-    ms_c     = _col(df, "MS level", "MS Level", "MS")
-    school_c = _col(df, "Academic School", "School", "Campus")
-    major_c  = _col(df, "Academic Major", "Major")
-    contracted_c = _col(df, "Are you contracted?", "Contracted")
-    prior_c      = _col(df, "Are you prior service? (Guard or otherwise)", "prior service")
-    vehicle_c    = _col(df, "Do you have a vehicle or reliable transportation to?", "vehicle")
+    if df is None or df.empty:
+        raise RuntimeError("Availability sheet is empty or failed to load")
 
-    # Optional org filter
-    if org and school_c in (df.columns if not df.empty else []):
+    # Build a canonical lookup map for the actual dataframe columns
+    canon_to_real: dict[str, str] = {}
+    for col in df.columns:
+        canon_to_real[_canon_key(col)] = col
+
+    # Helper to resolve a real df column given *many* alias patterns
+    def pick_col(*aliases: str) -> str | None:
+        """
+        Try exact canonical match first; then startswith; then contains.
+        """
+        cand_keys = [_canon_key(a) for a in aliases]
+        # exact
+        for k in cand_keys:
+            if k in canon_to_real:
+                return canon_to_real[k]
+        # startswith
+        for k in cand_keys:
+            for have_k, real in canon_to_real.items():
+                if have_k.startswith(k):
+                    return real
+        # contains
+        for k in cand_keys:
+            for have_k, real in canon_to_real.items():
+                if k in have_k:
+                    return real
+        return None
+
+    # ---------- define ALL your headers as aliases ----------
+    # primary identity/contact
+    first_c   = pick_col("first name", "first", "given name")
+    last_c    = pick_col("last name", "last", "surname", "family name")
+    ms_c      = pick_col("ms level", "mslevel", "ms")
+    email_c   = pick_col("school email", "email address", "email")
+    phone_c   = pick_col("phone number", "phone", "mobile number")
+    school_c  = pick_col("academic school", "school", "campus")
+    major_c   = pick_col("academic major", "major")
+    timestamp_c = pick_col("timestamp")
+
+    # booleans / flags
+    contracted_c = pick_col("are you contracted", "contracted")
+    prior_c      = pick_col("are you prior service guard or otherwise", "prior service")
+    vehicle_c    = pick_col("do you have a vehicle or reliable transportation tofrom events",
+                            "do you have a vehicle or reliable transportation to",
+                            "vehicle reliable transportation")
+
+    colorguard_c = pick_col("do you have colorguard experience", "colorguard experience")
+    agsu_c       = pick_col("do you have agsu", "agsu")
+    ranger_c     = pick_col("do you want to do ranger challenge", "ranger challenge")
+    ocps_c       = pick_col("do you have ocps", "ocps")
+    pt_c         = pick_col("do you have pt uniform", "pt uniform")
+    compass_c    = pick_col("do you have a compass", "compass")
+
+    # commute times (very long form labels)
+    commute_tech_c = pick_col("how long is your commute to tech track in minutes type numbers only example 5")
+    commute_gsu_c  = pick_col("how long is your commute to gsu track in minutes type numbers only example 5")
+    commute_ulm_c  = pick_col("how long is your commute to ulm in minutes type numbers only example 5")
+    commute_nsu_c  = pick_col("how long is your commute to nsu in minutes")
+
+    # busy blocks (Mon–Fri) — those long multi-line “click the times…” headers
+    mon_c = pick_col("monday click the times that you have classobligations including rotc", "monday")
+    tue_c = pick_col("tuesday click the times that you have classobligations including rotc", "tuesday")
+    wed_c = pick_col("wednesday click the times that you have classobligations including rotc", "wednesday")
+    thu_c = pick_col("thursday click the times that you have classobligations including rotc", "thursday")
+    fri_c = pick_col("friday click the times that you have classobligations including rotc", "friday")
+
+    # extras
+    bayou_c    = pick_col("do you want to attend bayou classic", "bayou classic")
+    special1_c = pick_col("please mention here any special circumstances youre in if appropriate so they can be addressed",
+                          "please mention here any special circumstances")
+    special2_c = pick_col("location to fill in second special circumstance if necessary",
+                          "second special circumstance")
+
+    # sanity check for required minimum
+    missing = [name for name, col in {
+        "First Name": first_c,
+        "Last Name":  last_c,
+    }.items() if col is None]
+    if missing:
+        # make debugging friendly: show first 12 columns
+        cols_preview = list(map(str, df.columns))[:12]
+        raise RuntimeError(f"availability sheet is missing required columns {missing}; present (first 12): {cols_preview}")
+
+    # optional org filter
+    if org and school_c:
         df = df[df[school_c].astype(str).str.contains(org, case=False, na=False)]
+        if df.empty:
+            raise ValueError(f"No records for org '{org}'")
 
-    q = (query or "").strip().lower()
-    if not q or df.empty:
-        raise ValueError("No data or empty query")
+    # ---------- build normalized columns for matching ----------
+    def _safe(col): 
+        return df[col].astype(str) if col in df.columns else pd.Series([""] * len(df))
 
-    hit = None
-    # Prefer exact email match
-    if email_c and "@" in q:
-        m = df[df[email_c].astype(str).str.lower() == q]
-        if not m.empty:
-            hit = m.iloc[0]
+    df["_first_n"] = _safe(first_c).map(_norm_text)
+    df["_last_n"]  = _safe(last_c).map(_norm_text)
+    df["_full_n"]  = (df["_first_n"] + " " + df["_last_n"]).str.strip()
+    df["_rev_n"]   = (df["_last_n"] + " " + df["_first_n"]).str.strip()
 
-    # Try "First Last"
-    if hit is None and first_c and last_c:
-        parts = q.split()
-        if len(parts) >= 2:
-            f, l = parts[0], parts[-1]
-            m = df[(df[first_c].astype(str).str.lower() == f) &
-                   (df[last_c].astype(str).str.lower() == l)]
-            if not m.empty:
-                hit = m.iloc[0]
+    if email_c:
+        df["_email_n"] = _safe(email_c).map(_norm_text)
+        df["_email_local"] = df["_email_n"].str.split("@").str[0]
+    else:
+        df["_email_n"] = ""
+        df["_email_local"] = ""
 
-    if hit is None:
+    # ---------- parse the query and match ----------
+    q_raw = (query or "").strip()
+    if not q_raw:
+        raise ValueError("Empty query")
+
+    qn = _norm_text(q_raw)
+    hit_idx = None
+
+    # email path (full or partial)
+    if "@" in qn:
+        candidates = df.index[
+            (df["_email_n"] == qn) |
+            (df["_email_n"].str.contains(qn, na=False)) |
+            (df["_email_local"] == qn.split("@")[0])
+        ].tolist()
+        if candidates:
+            exacts = [i for i in candidates if df.at[i, "_email_n"] == qn]
+            hit_idx = (exacts[0] if exacts else candidates[0])
+
+    # name path
+    if hit_idx is None:
+        tokens = [t for t in qn.split(" ") if t]
+        # try exact full or reversed
+        fast = df.index[(df["_full_n"] == qn) | (df["_rev_n"] == qn)].tolist()
+        if fast:
+            hit_idx = fast[0]
+        else:
+            # score-based partial matching
+            def _score_name(q_tokens: list[str], first: str, last: str) -> int:
+                first_n = _norm_text(first)
+                last_n  = _norm_text(last)
+                full    = f"{first_n} {last_n}".strip()
+                rev     = f"{last_n} {first_n}".strip()
+
+                score = 0
+                q    = " ".join(q_tokens)
+
+                if q == full or q == rev:
+                    score += 100
+                if full.startswith(q) or rev.startswith(q):
+                    score += 60
+                if q in full or q in rev:
+                    score += 40
+
+                for t in q_tokens:
+                    if t and (t == first_n or t == last_n):
+                        score += 25
+                    if t and (first_n.startswith(t) or last_n.startswith(t)):
+                        score += 12
+                    if t and (t in first_n or t in last_n):
+                        score += 6
+
+                # initials (e.g., "jd" or "j d")
+                if len(q_tokens) == 2 and _initial(first) == q_tokens[0][:1] and _initial(last) == q_tokens[1][:1]:
+                    score += 30
+                if len(q) == 2 and _initial(first) == q[0] and _initial(last) == q[1]:
+                    score += 25
+
+                return score
+
+            best_i = None
+            best_s = -1
+            for i, row in df.iterrows():
+                s = _score_name(tokens, row.get(first_c, ""), row.get(last_c, ""))
+                if s > best_s:
+                    best_s, best_i = s, i
+            if best_s >= 20:
+                hit_idx = best_i
+
+    if hit_idx is None:
+        sample_cols = [c for c in [first_c, last_c, email_c, school_c] if c]
+        sample_preview = df[sample_cols].head(5).to_dict(orient="records")
+        log.warning("person_info: no match q=%r norm=%r org=%r; sample=%s", q_raw, qn, org, sample_preview)
         raise ValueError("No matching cadet found")
 
-    def g(colname: Optional[str]) -> str:
-        if not colname or colname not in df.columns:
-            return ""
-        return _clean_str(hit.get(colname, ""))
+    hit = df.loc[hit_idx]
 
-    return {
+    def g(col):
+        return (str(hit.get(col, "")).strip() if col in df.columns else "")
+
+    # ---------- build response ----------
+    person = {
         "first": g(first_c),
         "last": g(last_c),
-        "ms": _norm_ms(g(ms_c)),
+        "ms": g(ms_c),
         "email": g(email_c),
         "phone": g(phone_c),
         "school": g(school_c),
@@ -270,6 +458,40 @@ def person_info(query: str, org: Optional[str] = None) -> Dict[str, str]:
         "prior_service": g(prior_c),
         "vehicle": g(vehicle_c),
     }
+
+    # HUGE extras payload with everything else you listed
+    extras = {
+        "timestamp": g(timestamp_c),
+        "colorguard_experience": g(colorguard_c),
+        "agsu": g(agsu_c),
+        "ranger_challenge": g(ranger_c),
+        "ocps": g(ocps_c),
+        "pt_uniform": g(pt_c),
+        "compass": g(compass_c),
+        "commute_minutes": {
+            "tech_track": g(commute_tech_c),
+            "gsu_track":  g(commute_gsu_c),
+            "ulm":        g(commute_ulm_c),
+            "nsu":        g(commute_nsu_c),
+        },
+        "busy_blocks": {
+            "monday":    g(mon_c),
+            "tuesday":   g(tue_c),
+            "wednesday": g(wed_c),
+            "thursday":  g(thu_c),
+            "friday":    g(fri_c),
+        },
+        "bayou_classic_interest": g(bayou_c),
+        "special_circumstances_primary": g(special1_c),
+        "special_circumstances_secondary": g(special2_c),
+    }
+
+    # Include extras in response for callers that want it,
+    # but keep top-level keys backward-compatible.
+    person["extras"] = extras
+
+    return person
+
 
 
 def find_available(day: str, start_hhmm: str, end_hhmm: str, org: Optional[str] = None) -> List[Dict[str, str]]:
