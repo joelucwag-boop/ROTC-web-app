@@ -114,17 +114,25 @@ def daily_report():
 @app.get("/reports/weekly")
 def weekly_report():
     if not session.get("user_ok"): return require_user()
-    # Simple: last 7 days over all dates present
     try:
         df = get_attendance_dataframe()
-        dates = [d["iso"] for d in list_attendance_dates()][-7:]
+        date_objs = list_attendance_dates()
+        if not date_objs:
+            return render_template("weekly.html", rows={}, dates=[])
+        dates = [d["iso"] for d in date_objs][-7:]  # last up to 7
         rows = {}
         for iso in dates:
-            rows[iso] = get_status_by_date_and_ms(df, iso)
-        return render_template("weekly.html", rows=rows, dates=dates)
+            try:
+                rows[iso] = get_status_by_date_and_ms(df, iso)
+            except Exception as e:
+                # skip dates that can’t resolve (keeps page rendering)
+                logging.getLogger("rotc").warning("weekly skip %s: %s", iso, e)
+                continue
+        return render_template("weekly.html", rows=rows, dates=list(rows.keys()))
     except Exception as e:
         log.exception("weekly report error")
         return render_template("error.html", msg=str(e)), 500
+
 
 # ---- Directory (password protected) ----
 @app.get("/directory")
@@ -218,6 +226,53 @@ def writer_post():
         log.exception("writer post error")
         flash(f"Error: {e}")
         return redirect(url_for("writer_form"))
+# --- Create today's date column (admin) ---
+@app.post("/writer/create-today")
+def writer_create_today():
+    if not session.get("admin_ok"): return require_admin()
+    suffix = request.form.get("suffix", "PT").strip() or "PT"
+    try:
+        info = add_date_column_for_sections(suffix)  # returns {'label','iso'}
+        flash(f"Added header for today: {info['label']}")
+        return redirect(url_for("writer_bulk", date=info["iso"]))
+    except Exception as e:
+        log.exception("create-today error")
+        return render_template("error.html", msg=str(e)), 500
+
+# --- Bulk writer form ---
+@app.get("/writer/bulk")
+def writer_bulk():
+    if not session.get("admin_ok"): return require_admin()
+    from utils.gutils import get_cadet_directory_rows
+    date_iso = request.args.get("date") or "__TODAY__"
+    cadets = get_cadet_directory_rows()
+    return render_template("writer_bulk.html", cadets=cadets, date_iso=date_iso)
+
+# --- Bulk writer submit ---
+@app.post("/writer/bulk")
+def writer_bulk_post():
+    if not session.get("admin_ok"): return require_admin()
+    date_iso = request.form.get("date_iso") or "__TODAY__"
+    section  = request.form.get("section", "ANY")
+    total = ok = 0
+    for key in request.form:
+        if not key.startswith("status__"): 
+            continue
+        total += 1
+        name = key.split("__",1)[1]
+        val  = request.form.get(key)
+        if val == "Excused":
+            reason = (request.form.get(f"reason__{name}") or "").strip()
+            if reason:
+                val = f"Excused: {reason}"
+        try:
+            if update_attendance_cell(name, date_iso, val, section):
+                ok += 1
+        except Exception as e:
+            log.warning("write fail %s: %s", name, e)
+            continue
+    flash(f"Wrote {ok}/{total} selections.")
+    return redirect(url_for("writer_bulk", date=date_iso))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
