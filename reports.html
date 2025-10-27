@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Reports</h2>
+<h4>Daily</h4>
+<form method="get" action="{{ url_for('daily_report') }}">
+  <select name="date">
+    {% for d in dates %}<option value="{{ d.iso }}">{{ d.iso }} — {{ d.event }}</option>{% endfor %}
+  </select>
+  <button type="submit">Run</button>
+</form>
+<h4>Weekly (last 7 listed dates)</h4>
+<p><a href="{{ url_for('weekly_report') }}">View weekly snapshot</a></p>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Daily report — {{ date }}</h3>
+<div class="grid">
+  {% for k, arr in buckets.items() %}
+  <article>
+    <h4>{{ k }}</h4>
+    {% for name in arr %}<span class="chip">{{ name }}</span>{% endfor %}
+  </article>
+  {% endfor %}
+</div>
+{% endblock %}

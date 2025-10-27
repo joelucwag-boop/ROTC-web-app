@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Weekly snapshot (last 7 available dates)</h3>
+{% for iso in dates %}
+<details>
+  <summary>{{ iso }}</summary>
+  <div class="grid">
+    {% for k, arr in rows[iso].items() %}
+    <article>
+      <h4>{{ k }}</h4>
+      {% for name in arr %}<span class="chip">{{ name }}</span>{% endfor %}
+    </article>
+    {% endfor %}
+  </div>
+</details>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>{{ name }}</h3>
+{% if not has %}
+<p>No availability/general info found.</p>
+{% else %}
+<article>
+  <pre>{{ row | tojson(indent=2) }}</pre>
+</article>
+{% endif %}
+{% endblock %}

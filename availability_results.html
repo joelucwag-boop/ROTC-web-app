@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Available on {{ day }} during {{ window }}</h3>
+<ul>
+{% for r in results %}
+  <li><a href="{{ url_for('directory_entry', name=r.name) }}">{{ r.name }}</a></li>
+{% endfor %}
+</ul>
+{% endblock %}

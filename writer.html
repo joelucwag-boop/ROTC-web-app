@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Attendance Writer</h2>
+<form method="post">
+  <div class="grid">
+    <div><label>Cadet (First Last)</label><input name="cadet" required></div>
+    <div><label>Date</label>
+      <select name="date">
+        {% for d in dates %}<option value="{{ d.iso }}">{{ d.iso }} — {{ d.event }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Status</label>
+      <select name="status"><option>Present</option><option>FTR</option><option>Excused: NFR</option><option>Excused: NM</option><option>Excused: Other</option></select>
+    </div>
+    <div><label>Section</label>
+      <select name="section"><option>ANY</option><option>GSU</option><option>ULM</option></select>
+    </div>
+  </div>
+  <button type="submit">Write</button>
+</form>
+<p class="contrast">Admin password required.</p>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>OML (UI95-style)</h2>
+{% for ms, rows in boards.items() %}
+<article>
+  <h4>{{ ms }}</h4>
+  <ol>
+    {% for r in rows %}<li>{{ r.Name }} — {{ r.Present }} Present, {{ r.FTR }} FTR</li>{% endfor %}
+  </ol>
+</article>
+{% endfor %}
+{% endblock %}

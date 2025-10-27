@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Attendance Dashboard</h2>
+<canvas id="trend" height="120"></canvas>
+<script>
+const rates = {{ rates_json | safe }};
+const labels = rates.map(r => r.iso + (r.event? " — "+r.event : ""));
+const ds = (key, label) => ({
+  label: label,
+  data: rates.map(r => r[key]),
+  borderWidth: 2,
+  fill: false,
+  tension: 0.3
+});
+new Chart(document.getElementById('trend'), {
+  type: 'line',
+  data: {
+    labels: labels,
+    datasets: [ds('MS1','MS1'), ds('MS2','MS2'), ds('MS3','MS3'), ds('MS4','MS4'), ds('AVG','Average')]
+  },
+  options: {responsive:true, scales:{y:{title:{display:true, text:'Present %'}}}}
+});
+</script>
+{% endblock %}

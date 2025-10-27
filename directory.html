@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Cadet Directory</h2>
+<table>
+  <thead><tr><th>Name</th><th>MS</th><th>Profile</th></tr></thead>
+  <tbody>
+  {% for c in cadets %}
+  <tr><td>{{ c.Name }}</td><td>MS{{ c.MS }}</td><td><a href="{{ url_for('directory_entry', name=c.Name) }}">view</a></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

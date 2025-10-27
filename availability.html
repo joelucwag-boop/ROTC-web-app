@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Availability Finder</h2>
+<form method="post" action="{{ url_for('availability_search') }}">
+  <div class="grid">
+    <div><label>Day
+      <select name="day" required>
+        <option>Monday</option><option>Tuesday</option>
+        <option>Wednesday</option><option>Thursday</option><option>Friday</option>
+      </select></label></div>
+    <div><label>Time window (HHMM-HHMM)</label>
+      <input name="window" placeholder="0900-1100" required></div>
+  </div>
+  <button type="submit">Find who is free</button>
+</form>
+{% endblock %}
