@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Bulk Attendance Writer</h2>
+
+<form method="post" action="{{ url_for('writer_bulk_post') }}">
+  <input type="hidden" name="date_iso" value="{{ date_iso }}">
+  <div class="grid">
+    <div><label>Date in sheet</label><input value="{{ date_iso }}" disabled></div>
+    <div><label>Section</label>
+      <select name="section"><option>ANY</option><option>GSU</option><option>ULM</option></select>
+    </div>
+  </div>
+
+  <p class="contrast">Click a status to select; click again to **deselect**. If “Excused” is selected, you can optionally type a reason.</p>
+
+  <table>
+    <thead><tr><th>Name</th><th>MS</th><th>Present</th><th>FTR</th><th>Excused</th><th>Reason (optional)</th></tr></thead>
+    <tbody>
+      {% for c in cadets %}
+      <tr>
+        <td>{{ c.Name }}</td>
+        <td>MS{{ c.MS }}</td>
+        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="Present">Present</button></td>
+        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="FTR">FTR</button></td>
+        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="Excused">Excused</button></td>
+        <td><input name="reason__{{ c.Name }}" placeholder="Optional when Excused"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- hidden inputs the JS will manage -->
+  <div id="hidden"></div>
+
+  <button type="submit">Write Selections</button>
+</form>
+
+<script>
+  // three-state, mutually exclusive, with deselect on second click
+  const hidden = document.getElementById('hidden');
+  const map = new Map(); // name -> current value or ''
+  function setHidden(name, val) {
+    let id = "status__" + name;
+    let input = document.querySelector('input[name="'+id+'"]');
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'hidden'; input.name = id;
+      hidden.appendChild(input);
+    }
+    input.value = val;
+  }
+  function clearHidden(name) {
+    let input = document.querySelector('input[name="status__'+name+'"]');
+    if (input) input.remove();
+  }
+  function toggleButton(btn) {
+    const name = btn.dataset.name;
+    const val  = btn.dataset.val;
+    const rowBtns = [...document.querySelectorAll('button.toggle[data-name="'+name+'"]')];
+    const current = map.get(name) || "";
+    if (current === val) {
+      // deselect
+      map.set(name, "");
+      rowBtns.forEach(b => b.classList.remove('contrast'));
+      clearHidden(name);
+    } else {
+      // select this, clear others
+      map.set(name, val);
+      rowBtns.forEach(b => b.classList.remove('contrast'));
+      btn.classList.add('contrast');
+      setHidden(name, val);
+    }
+  }
+  document.querySelectorAll('button.toggle').forEach(btn => {
+    btn.addEventListener('click', () => toggleButton(btn));
+  });
+</script>
+{% endblock %}
