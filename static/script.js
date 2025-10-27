@@ -1,458 +1,255 @@
-/* ===== ROTC Tools – Frontend JS (full rewrite) =====
-   - Auto-reads ?pw= from URL and attaches to every API call
-   - Availability search with validation, loading state, and table render
-   - Attendance tab scaffold (roster load + single-select marking UI)
-   - Reports tab tries endpoints, degrades gracefully if not present
-   - Robust error surfacing (status + JSON error message if any)
-   - No external deps
-===================================================== */
+// ------------ ROTC Tools Frontend ------------
+// Robust tab wiring + API calls (GET only) + defensive rendering
+// Requires the page to have panels with ids: panel-availability, panel-person, panel-attendance (optional)
+// And tab buttons/links with [data-tab="availability|person|attendance"]
 
-(() => {
-  // ---------- Basic DOM helpers ----------
-  const $ = (sel, ctx = document) => ctx.querySelector(sel);
-  const $$ = (sel, ctx = document) => Array.from(ctx.querySelectorAll(sel));
-  const byId = id => document.getElementById(id);
+(function () {
+  const log = (...args) => console.log("[ui]", ...args);
+  const warn = (...args) => console.warn("[ui]", ...args);
+  const err = (...args) => console.error("[ui]", ...args);
 
-  // ---------- Global state ----------
-  const state = {
-    pw: new URLSearchParams(location.search).get("pw") || "",
-    busy: false,
-    endpoints: {
-      available: "/api/available",
-      person: "/api/person",                  // optional; we probe before using
-      roster: "/api/attendance/roster",       // expected: ?campus=GSU|ULM
-      save: "/api/attendance/save",           // body: { campus, day, eventType, date, slotLabel, rows:[{first,last,ms,status}] }
-      leaderboard: "/api/reports/leaderboard" // optional
-    },
-    endpointExists: {
-      person: false,
-      roster: false,
-      save: false,
-      leaderboard: false
+  // --- PW handling (from URL) ---
+  const url = new URL(window.location.href);
+  const PW = url.searchParams.get("pw") || "";
+  if (!PW) {
+    warn("No ?pw=… in URL. Most endpoints will 401.");
+  }
+
+  // --- Helpers ---
+  function qs(sel) { return document.querySelector(sel); }
+  function qsa(sel) { return Array.from(document.querySelectorAll(sel)); }
+
+  function show(id) {
+    const el = qs(`#${id}`);
+    if (el) el.style.display = "";
+  }
+  function hide(id) {
+    const el = qs(`#${id}`);
+    if (el) el.style.display = "none";
+  }
+  function setActiveTab(name) {
+    // Toggle active state on any [data-tab] triggers
+    qsa("[data-tab]").forEach(el => {
+      if (el.getAttribute("data-tab") === name) {
+        el.classList.add("active");
+        el.setAttribute("aria-selected", "true");
+      } else {
+        el.classList.remove("active");
+        el.setAttribute("aria-selected", "false");
+      }
+    });
+    // Show the target panel, hide others (if they exist)
+    const panels = ["availability", "person", "attendance", "reports"];
+    panels.forEach(p => {
+      const pid = `panel-${p}`;
+      if (p === name) show(pid); else hide(pid);
+    });
+  }
+
+  async function fetchJSON(endpoint, params = {}) {
+    // always GET; never HEAD
+    const u = new URL(endpoint, window.location.origin);
+    // append pw to every request
+    u.searchParams.set("pw", PW);
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, v);
+    });
+    log("GET", u.toString());
+    const resp = await fetch(u.toString(), { method: "GET", headers: { "Accept": "application/json" } });
+    // Special-case 401/403 to bubble clearer errors
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`HTTP ${resp.status} on ${u.pathname} – ${text || resp.statusText}`);
     }
-  };
-
-  // ---------- UI roots ----------
-  const rootMsg = byId("msg");            // <div id="msg"></div> (one-line status/errors)
-  const tabAvailability = byId("tab-availability");
-  const tabAttendance   = byId("tab-attendance");
-  const tabReports      = byId("tab-reports");
-
-  // Availability controls
-  const daySel   = byId("day-select");
-  const startInp = byId("start-input");
-  const endInp   = byId("end-input");
-  const btnSearch = byId("btn-search");
-  const availOut = byId("availability-out");
-
-  // Attendance controls
-  const campusSel   = byId("campus-select");    // GSU | ULM
-  const eventSel    = byId("event-type-select");// PT | Lab | Other
-  const dateInp     = byId("date-input");       // yyyy-mm-dd
-  const slotInp     = byId("slot-label");       // e.g., "8/19/25 + PT"
-  const btnLoadRoster = byId("btn-load-roster");
-  const btnSaveAttendance = byId("btn-save-attendance");
-  const rosterOut   = byId("attendance-roster");
-
-  // Reports controls
-  const btnLoadLeaderboard = byId("btn-load-leaderboard");
-  const reportsOut = byId("reports-out");
-
-  // ---------- Utilities ----------
-  function setBusy(on, label = "") {
-    state.busy = on;
-    document.body.classList.toggle("busy", !!on);
-    status(label || (on ? "Working…" : ""));
+    // Some endpoints may return empty body for HEAD – but we never use HEAD now.
+    const json = await resp.json();
+    return json;
   }
 
-  function status(msg) {
-    if (!rootMsg) return;
-    rootMsg.textContent = msg || "";
-    rootMsg.classList.remove("error");
-  }
+  // --- Availability UI ---
+  function wireAvailability() {
+    const form = qs("#availability-form");
+    const btn = qs("#availability-search");
+    const out = qs("#availability-results");
 
-  function error(errMsg) {
-    if (!rootMsg) return;
-    rootMsg.textContent = errMsg || "Something went wrong.";
-    rootMsg.classList.add("error");
-  }
-
-  function msSortDesc(a, b) {
-    const ai = Number(a.ms || a.MS || 0);
-    const bi = Number(b.ms || b.MS || 0);
-    return bi - ai;
-  }
-
-  function pad4(s) {
-    s = (s || "").replace(/\D/g, "");
-    if (!s) return "";
-    if (s.length <= 2) return s.padStart(4, "0") + "0";
-    return s.padStart(4, "0");
-  }
-
-  async function fetchJSON(url, opts = {}) {
-    // Always attach pw
-    const u = new URL(url, location.origin);
-    if (state.pw) u.searchParams.set("pw", state.pw);
-
-    let res;
-    try {
-      res = await fetch(u.toString(), {
-        headers: { "Content-Type": "application/json" },
-        ...opts
-      });
-    } catch (e) {
-      throw new Error(`Network error: ${e.message}`);
-    }
-
-    let data = null;
-    const text = await res.text();
-    try { data = text ? JSON.parse(text) : {}; } catch {
-      // not JSON – still show raw body
-      throw new Error(`HTTP ${res.status} – ${text || "non-JSON response"}`);
-    }
-
-    if (!res.ok || data.error) {
-      const msg = data.error || `HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-    return data;
-  }
-
-  async function endpointExists(path) {
-    try {
-      const u = new URL(path, location.origin);
-      if (state.pw) u.searchParams.set("pw", state.pw);
-      const res = await fetch(u.toString(), { method: "HEAD" });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }
-
-  // ---------- Availability ----------
-  function validateAvailabilityInputs() {
-    const validDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-    const d = (daySel?.value || "").trim();
-    const s = pad4(startInp?.value || "");
-    const e = pad4(endInp?.value || "");
-    if (!validDays.includes(d)) throw new Error(`day must be one of ${JSON.stringify(validDays)}`);
-    if (!/^\d{4}$/.test(s)) throw new Error("Start time must be HHMM (e.g., 0830).");
-    if (!/^\d{4}$/.test(e)) throw new Error("End time must be HHMM (e.g., 1030).");
-    if (Number(e) <= Number(s)) throw new Error("End time must be after Start time.");
-    return { day: d, start: s, end: e };
-  }
-
-  function renderAvailability(rows) {
-    availOut.innerHTML = "";
-    if (!rows || !rows.length) {
-      availOut.innerHTML = `<p class="muted">No one is available in that window.</p>`;
+    if (!form || !btn || !out) {
+      log("Availability widgets not found; skipping wiring.");
       return;
     }
-    // Sort by MS level desc, then last name
-    rows.sort((a, b) => {
-      const m = msSortDesc(a, b);
-      if (m !== 0) return m;
-      const la = (a.last || a.Last || "").toLowerCase();
-      const lb = (b.last || b.Last || "").toLowerCase();
-      return la.localeCompare(lb);
-    });
 
-    const table = document.createElement("table");
-    table.className = "table";
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>MS</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-    const tb = $("tbody", table);
-    rows.forEach(r => {
-      const first = r.first || r.First || "";
-      const last = r.last || r.Last || "";
-      const ms = r.ms || r.MS || "";
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><button class="link person-btn" data-first="${encodeURIComponent(first)}" data-last="${encodeURIComponent(last)}">${first} ${last}</button></td>
-        <td>${ms}</td>
-      `;
-      tb.appendChild(tr);
-    });
-    availOut.appendChild(table);
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const day = (qs("#availability-day")?.value || "Mon").trim();
+      const start = (qs("#availability-start")?.value || "0900").trim();
+      const end = (qs("#availability-end")?.value || "1000").trim();
+      const org = (qs("#availability-org")?.value || "").trim();
 
-    // Only enable detail clicks if endpoint exists
-    if (state.endpointExists.person) {
-      availOut.addEventListener("click", async (ev) => {
-        const btn = ev.target.closest(".person-btn");
-        if (!btn) return;
-        try {
-          setBusy(true, "Loading profile…");
-          const first = decodeURIComponent(btn.dataset.first || "");
-          const last  = decodeURIComponent(btn.dataset.last || "");
-          const data = await fetchJSON(state.endpoints.person + `?first=${encodeURIComponent(first)}&last=${encodeURIComponent(last)}`);
-          showPersonModal(data);
-          status("");
-        } catch (e) {
-          error(e.message);
-        } finally {
-          setBusy(false);
+      out.innerHTML = `<div class="muted">Searching…</div>`;
+      try {
+        const data = await fetchJSON("/api/available", { day, start, end, org });
+        if (!data.ok) throw new Error(data.error || "Unknown error");
+        const rows = data.rows || [];
+        if (rows.length === 0) {
+          out.innerHTML = `<div class="muted">No cadets free in that window.</div>`;
+          return;
         }
-      }, { once: true }); // attach once per render
-    }
-  }
-
-  function showPersonModal(data) {
-    const modal = document.createElement("div");
-    modal.className = "modal";
-    modal.innerHTML = `
-      <div class="modal-card">
-        <div class="modal-head">
-          <h3>${(data.name || "Details")}</h3>
-          <button class="close-x">&times;</button>
-        </div>
-        <div class="modal-body">
-          <pre>${escapeHTML(JSON.stringify(data, null, 2))}</pre>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
-    modal.addEventListener("click", (e) => {
-      if (e.target.classList.contains("modal") || e.target.classList.contains("close-x")) {
-        modal.remove();
+        // Render simple table
+        const html = [
+          `<table class="table"><thead><tr><th>First</th><th>Last</th><th>MS</th></tr></thead><tbody>`,
+          ...rows.map(r => `<tr><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.ms)}</td></tr>`),
+          `</tbody></table>`
+        ].join("");
+        out.innerHTML = html;
+      } catch (ex) {
+        err("availability search failed:", ex);
+        out.innerHTML = `<div class="error">Availability error: ${esc(ex.message)}</div>`;
       }
     });
   }
 
-  // ---------- Attendance ----------
-  function renderRoster(rows) {
-    rosterOut.innerHTML = "";
-    if (!rows || !rows.length) {
-      rosterOut.innerHTML = `<p class="muted">No roster rows returned.</p>`;
+  // --- Person search UI ---
+  function wirePerson() {
+    const btn = qs("#person-search");
+    const input = qs("#person-query");
+    const out = qs("#person-result");
+
+    if (!btn || !input || !out) {
+      log("Person lookup widgets not found; skipping wiring.");
       return;
     }
-    // Sort MS desc then last
-    rows.sort((a, b) => {
-      const m = msSortDesc(a, b);
-      if (m !== 0) return m;
-      return String(a.last || "").localeCompare(String(b.last || ""));
+
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q) {
+        out.innerHTML = `<div class="muted">Type a name or email.</div>`;
+        return;
+      }
+      out.innerHTML = `<div class="muted">Searching…</div>`;
+      try {
+        const data = await fetchJSON("/api/person", { q });
+        if (!data.ok) throw new Error(data.error || "Unknown error");
+        const p = data.person || {};
+        out.innerHTML = renderPersonCard(p);
+      } catch (ex) {
+        err("person search failed:", ex);
+        out.innerHTML = `<div class="error">Person search error: ${esc(ex.message)}</div>`;
+      }
     });
-
-    // Column: name | MS | Present | FTR | Excused
-    const table = document.createElement("table");
-    table.className = "table compact";
-    table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Name</th><th>MS</th>
-          <th>Present</th><th>FTR</th><th>Excused</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    `;
-    const tb = $("tbody", table);
-
-    rows.forEach((r, idx) => {
-      const first = r.first || r.First || "";
-      const last  = r.last  || r.Last  || "";
-      const ms    = r.ms    || r.MS    || "";
-      const rowId = `r${idx}`;
-      const tr = document.createElement("tr");
-      tr.dataset.first = first;
-      tr.dataset.last  = last;
-      tr.dataset.ms    = ms;
-
-      tr.innerHTML = `
-        <td>${first} ${last}</td>
-        <td>${ms}</td>
-        <td><input type="radio" name="${rowId}" value="Present"></td>
-        <td><input type="radio" name="${rowId}" value="FTR"></td>
-        <td><input type="radio" name="${rowId}" value="Excused"></td>
-      `;
-      tb.appendChild(tr);
-    });
-
-    rosterOut.appendChild(table);
-    rosterOut.dataset.ready = "1";
   }
 
-  function collectAttendancePayload() {
-    if (rosterOut.dataset.ready !== "1") throw new Error("Load a roster first.");
-    const campus = campusSel.value;
-    const eventType = eventSel.value;
-    const date = (dateInp.value || "").trim();
-    const slotLabel = (slotInp.value || "").trim();
-    if (!campus) throw new Error("Campus is required.");
-    if (!eventType) throw new Error("Event type is required.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Date must be yyyy-mm-dd.");
-    if (!slotLabel) throw new Error("Slot label is required.");
+  function renderPersonCard(p) {
+    const ex = p.extras || {};
+    const commute = ex.commute_minutes || {};
+    const busy = ex.busy_blocks || {};
 
-    const rows = [];
-    $$("tbody tr", rosterOut).forEach(tr => {
-      const first = tr.dataset.first;
-      const last  = tr.dataset.last;
-      const ms    = tr.dataset.ms;
-      const checked = $$("input[type=radio]:checked", tr)[0];
-      const status = checked ? checked.value : "";
-      rows.push({ first, last, ms, status });
-    });
-    return { campus, eventType, date, slotLabel, rows };
-  }
-
-  // ---------- Reports ----------
-  function renderLeaderboard(data) {
-    reportsOut.innerHTML = "";
-    if (!data || !data.rows || !data.rows.length) {
-      reportsOut.innerHTML = `<p class="muted">No leaderboard data.</p>`;
-      return;
-    }
-    const table = document.createElement("table");
-    table.className = "table";
-    table.innerHTML = `
-      <thead><tr><th>Rank</th><th>Name</th><th>MS</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    `;
-    const tb = $("tbody", table);
-    data.rows.forEach((r, i) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i + 1}</td><td>${r.name || ""}</td><td>${r.ms || ""}</td><td>${r.score ?? ""}</td>`;
-      tb.appendChild(tr);
-    });
-    reportsOut.appendChild(table);
-  }
-
-  // ---------- Event wiring ----------
-  btnSearch?.addEventListener("click", async () => {
-    try {
-      availOut.innerHTML = "";
-      status("");
-      const { day, start, end } = validateAvailabilityInputs();
-      setBusy(true, "Searching availability…");
-      const data = await fetchJSON(`${state.endpoints.available}?day=${encodeURIComponent(day)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
-      if (!data || data.ok === false) throw new Error(data?.error || "Unknown error");
-      renderAvailability(data.rows || data.people || []);
-      status(`Found ${ (data.rows || []).length } cadet(s).`);
-    } catch (e) {
-      error(e.message);
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  btnLoadRoster?.addEventListener("click", async () => {
-    if (!state.endpointExists.roster) {
-      error("Roster API is not available on the server.");
-      return;
-    }
-    try {
-      rosterOut.innerHTML = "";
-      status("");
-      const campus = campusSel.value || "GSU";
-      setBusy(true, `Loading ${campus} roster…`);
-      const data = await fetchJSON(`${state.endpoints.roster}?campus=${encodeURIComponent(campus)}`);
-      renderRoster(data.rows || data.roster || []);
-      status(`Loaded ${ (data.rows || []).length } cadet(s).`);
-    } catch (e) {
-      error(e.message);
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  btnSaveAttendance?.addEventListener("click", async () => {
-    if (!state.endpointExists.save) {
-      error("Save API is not available on the server.");
-      return;
-    }
-    try {
-      const payload = collectAttendancePayload();
-      setBusy(true, "Saving attendance…");
-      const res = await fetchJSON(state.endpoints.save, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-      status(res?.message || "Attendance saved.");
-    } catch (e) {
-      error(e.message);
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  btnLoadLeaderboard?.addEventListener("click", async () => {
-    if (!state.endpointExists.leaderboard) {
-      error("Leaderboard endpoint is not available.");
-      return;
-    }
-    try {
-      setBusy(true, "Loading leaderboard…");
-      const data = await fetchJSON(state.endpoints.leaderboard);
-      renderLeaderboard(data);
-      status("Leaderboard loaded.");
-    } catch (e) {
-      error(e.message);
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  // ---------- Tabs (simple) ----------
-  function showTab(which) {
-    const maps = {
-      availability: tabAvailability,
-      attendance: tabAttendance,
-      reports: tabReports
+    const boolBadge = (label, val) => {
+      if (val == null || val === "") return "";
+      const yes = String(val).toLowerCase().startsWith("y");
+      return `<span class="chip ${yes ? "chip-yes" : "chip-no"}">${label}: ${yes ? "Yes" : "No"}</span>`;
     };
-    Object.values(maps).forEach(node => node?.classList.add("hidden"));
-    maps[which]?.classList.remove("hidden");
 
-    // Highlight nav buttons (if present)
-    $$(".navbtn").forEach(b => b.classList.remove("active"));
-    $(`.navbtn[data-tab="${which}"]`)?.classList.add("active");
+    return `
+      <div class="card">
+        <div class="card-title">${esc(p.first)} ${esc(p.last)} <span class="muted">(${esc(p.ms||"")})</span></div>
+        <div class="grid">
+          <div>
+            <div><strong>Email:</strong> ${esc(p.email||"")}</div>
+            <div><strong>Phone:</strong> ${esc(p.phone||"")}</div>
+            <div><strong>School:</strong> ${esc(p.school||"")}</div>
+            <div><strong>Major:</strong> ${esc(p.major||"")}</div>
+            <div><strong>Contracted:</strong> ${esc(p.contracted||"")}</div>
+            <div><strong>Prior Service:</strong> ${esc(p.prior_service||"")}</div>
+            <div><strong>Vehicle:</strong> ${esc(p.vehicle||"")}</div>
+          </div>
+          <div>
+            <div class="chips">
+              ${boolBadge("AGSU", ex.agsu)}
+              ${boolBadge("OCPs", ex.ocps)}
+              ${boolBadge("PT Uniform", ex.pt_uniform)}
+              ${boolBadge("Compass", ex.compass)}
+              ${boolBadge("Ranger Challenge", ex.ranger_challenge)}
+            </div>
+            <div class="muted small">Commute (mins): GSU ${esc(commute.gsu_track||"-")}, Tech ${esc(commute.tech_track||"-")}, ULM ${esc(commute.ulm||"-")}, NSU ${esc(commute.nsu||"-")}</div>
+            <details class="mt">
+              <summary>Weekly Busy Blocks</summary>
+              <pre class="pre-wrap small">${fmtBusy(busy)}</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    `;
   }
-  $$(".navbtn").forEach(btn => {
-    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+
+  function fmtBusy(b) {
+    const days = ["monday","tuesday","wednesday","thursday","friday"];
+    return days.map(d => {
+      const v = b[d] || "";
+      return `${cap(d)}: ${v || "—"}`;
+    }).join("\n");
+  }
+
+  // --- Attendance tab (read-only wiring; optional) ---
+  function wireAttendance() {
+    const btn = qs("#att-load-events");
+    const out = qs("#att-events");
+    if (!btn || !out) { log("Attendance widgets not found; skipping."); return; }
+
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      out.innerHTML = `<div class="muted">Loading events…</div>`;
+      try {
+        const data = await fetchJSON("/api/att/events");
+        if (!data.ok) throw new Error(data.error || "Unknown error");
+        const events = data.events || [];
+        if (!events.length) { out.innerHTML = `<div class="muted">No events.</div>`; return; }
+        out.innerHTML = `<ul class="list">${events.map(e => `<li>${esc(e.date)} — ${esc(e.header)}</li>`).join("")}</ul>`;
+      } catch (ex) {
+        err("attendance load failed:", ex);
+        out.innerHTML = `<div class="error">Attendance error: ${esc(ex.message)}</div>`;
+      }
+    });
+  }
+
+  // --- Tabs wiring ---
+  function wireTabs() {
+    const triggers = qsa("[data-tab]");
+    if (!triggers.length) {
+      log("No [data-tab] triggers found; skipping tabs wiring.");
+      return;
+    }
+    triggers.forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        const name = el.getAttribute("data-tab");
+        if (!name) return;
+        setActiveTab(name);
+      });
+    });
+
+    // pick initial tab from hash (#person etc.) or default to availability
+    const initial = (location.hash || "").replace(/^#/, "") || "availability";
+    setActiveTab(initial);
+  }
+
+  // --- tiny utils ---
+  function cap(s){ return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function esc(s){
+    return String(s ?? "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // --- init ---
+  document.addEventListener("DOMContentLoaded", () => {
+    try {
+      wireTabs();
+      wireAvailability();
+      wirePerson();
+      wireAttendance();
+      log("script initialized");
+    } catch (ex) {
+      err("fatal init error:", ex);
+    }
   });
-
-  // ---------- Init / Capability probe ----------
-  async function init() {
-    // If no pw, tell the user early (but allow availability from public sheet if backend allows)
-    if (!state.pw) {
-      status("Tip: append ?pw=YOURPASSWORD to the URL.");
-    }
-
-    // wire default values if not present
-    if (startInp && !startInp.value) startInp.value = "0830";
-    if (endInp   && !endInp.value)   endInp.value   = "1030";
-
-    // Probe optional endpoints so UI can degrade gracefully
-    state.endpointExists.person      = await endpointExists(state.endpoints.person);
-    state.endpointExists.roster      = await endpointExists(state.endpoints.roster);
-    state.endpointExists.save        = await endpointExists(state.endpoints.save);
-    state.endpointExists.leaderboard = await endpointExists(state.endpoints.leaderboard);
-
-    // Show/hide features based on probes
-    if (!state.endpointExists.roster) {
-      byId("attendance-tools")?.classList.add("muted-block");
-      byId("attendance-note")?.classList.remove("hidden");
-    }
-    if (!state.endpointExists.leaderboard) {
-      byId("reports-note")?.classList.remove("hidden");
-    }
-
-    // Default to Availability tab
-    showTab("availability");
-  }
-
-  // ---------- Misc ----------
-  function escapeHTML(s) {
-    return String(s).replace(/[&<>"']/g, c => (
-      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-    ));
-  }
-
-  // Go!
-  window.addEventListener("DOMContentLoaded", init);
 })();
