@@ -303,13 +303,24 @@ def find_available(day: str, start_hhmm: str, end_hhmm: str, org: Optional[str] 
         raise RuntimeError(f"Missing expected columns in availability sheet: {missing}. Present: {list(df.columns)}")
 
     # Resolve the day column case-insensitively
+    # Resolve the day column by exact match OR startswith (covers long prompt headers)
     day_col = None
+    dn = dnorm.lower()
     for c in df.columns:
-        if c.strip().lower() == dnorm.lower():
+        cl = c.strip().lower()
+        if cl == dn or cl.startswith(dn):
             day_col = c
             break
     if not day_col:
-        raise RuntimeError(f"Day column '{dnorm}' not found in sheet. Columns: {list(df.columns)}")
+        # As a final fallback, look for the day word anywhere in the column header
+        for c in df.columns:
+            if dn in c.strip().lower():
+                day_col = c
+                break
+    if not day_col:
+        raise RuntimeError(
+            f"Day column like '{dnorm}' not found. Example of your headers: {list(df.columns)[:8]} ..."
+        )
 
     # Optional org filter
     if org and school_col and (school_col in df.columns):
