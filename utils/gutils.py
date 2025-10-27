@@ -74,17 +74,34 @@ def get_attendance_dataframe():
 
 def list_attendance_dates():
     ws = _open_ws()
-    header = ws.row_values(1+detect_header_row(ws.get_all_values())[0])
+    rows = ws.get_all_values()
+    hdr_i, header = detect_header_row(rows)
+    header = rows[hdr_i]  # use the detected header row explicitly
+
     items = []
     for h in header:
-        md = _extract_date_str(h)
-        if md:
-            m, d, y = md.split("/")
-            iso = f"{y}-{int(m):02d}-{int(d):02d}"
-            evt = _event_from_header(h)
-            items.append({"iso": iso, "header": h, "event": evt})
-    items.sort(key=lambda x: x["iso"])
-    return items
+        md = _extract_date_str(h)   # returns 'MM/DD/YYYY' or None
+        if not md:
+            continue
+        m, d, y = md.split("/")
+        try:
+            y = int(y)
+            iso = f"{y:04d}-{int(m):02d}-{int(d):02d}"
+        except Exception:
+            continue
+        evt = _event_from_header(h)
+        items.append({"iso": iso, "header": h, "event": evt})
+
+    # de-dup + sort
+    seen = set()
+    out = []
+    for it in sorted(items, key=lambda x: x["iso"]):
+        if it["iso"] in seen:
+            continue
+        seen.add(it["iso"])
+        out.append(it)
+    return out
+
 
 def _event_from_header(header_cell: str) -> str:
     if not header_cell:
@@ -184,81 +201,77 @@ def get_availability_df():
     return df
 
 def _parse_time_window(s):
-    # "0900-1130" -> (540, 690) minutes
-    s = s.replace(":","")
-    a,b = s.split("-")
+    # Accepts '09:00-11:30', '0900-1130', '09 00 - 11 30'
+    s = re.sub(r"[^\d\-]", "", s or "")
+    a, b = s.split("-")
     def minutes(hhmm):
-        hh = int(hhmm[0:2]); mm=int(hhmm[2:4])
-        return hh*60+mm
-    return minutes(a), minutes(b)
+        hh = int(hhmm[0:2]); mm = int(hhmm[2:4])
+        return hh*60 + mm
+    return minutes(a.zfill(4)), minutes(b.zfill(4))
 
 def find_cadet_availability(day: str, window: str):
-    df = get_availability_df()
-    day_col_map = {
-        "monday": "Monday",
-        "tuesday": "Tuesday",
-        "wednesday": "Wednesday",
-        "thursday": "Thursday",
-        "friday": "Friday"
+    day_norm = (day or "").strip().lower()
+    # map a bunch of common variants to canonical column headers
+    day_alias = {
+        "m": "Monday", "mon": "Monday", "monday": "Monday",
+        "t": "Tuesday", "tu": "Tuesday", "tue": "Tuesday", "tues": "Tuesday", "tuesday": "Tuesday",
+        "w": "Wednesday", "wed": "Wednesday", "weds": "Wednesday", "wednesday": "Wednesday",
+        "th": "Thursday", "thu": "Thursday", "thur": "Thursday", "thurs": "Thursday", "thursday": "Thursday",
+        "f": "Friday", "fri": "Friday", "friday": "Friday",
     }
-    col = None
-    for k,v in day_col_map.items():
-        if day.lower().startswith(k[:3]): col=v
-    if not col or col not in df.columns:
+    col = day_alias.get(day_norm)
+    if not col:
+        # also allow prefix match like 'th' from 'Thursday'
+        for k, v in day_alias.items():
+            if day_norm.startswith(k):
+                col = v; break
+    if not col:
         raise RuntimeError("Day must be one of Monday..Friday")
-    start,end = _parse_time_window(window)
+
+    start, end = _parse_time_window(window)
+    df = get_availability_df()
+    if col not in df.columns:
+        raise RuntimeError(f"Availability sheet has no '{col}' column")
+
     hits = []
     for _, row in df.iterrows():
-        slots = str(row[col] or "")
-        # free if NOT within any busy segments the cadet listed
+        slots = str(row.get(col, "") or "")
         busy = False
         for token in slots.split(","):
             token = token.strip()
-            if not token: continue
-            # tokens like 0900-0930
+            if not token:
+                continue
             try:
-                bstart, bend = _parse_time_window(token.replace(" ", ""))
-                # overlap?
+                bstart, bend = _parse_time_window(token)
                 if not (bend <= start or bstart >= end):
                     busy = True; break
             except Exception:
                 continue
         if not busy:
-            hits.append({"name": row.get("FullName",""), "row": row.to_dict()})
+            hits.append({"name": row.get("FullName", ""), "row": row.to_dict()})
     hits.sort(key=lambda r: r["name"].split(" ")[-1].lower())
     return hits
 
+
 def _iso_to_mdyyyy(iso):
-    y,m,d = (int(x) for x in iso.split("-"))
-    return f"{m}/{d}/{y}"
+    # accepts 'YYYY-MM-DD' or already 'MM/DD/YYYY'
+    if "/" in iso:
+        return iso
+    y, m, d = (int(x) for x in iso.strip().split("-"))
+    return f"{int(m)}/{int(d)}/{y}"
 
 def get_status_by_date_and_ms(df: pd.DataFrame, iso: str):
-    md = _iso_to_mdyyyy(iso)
+    md = _iso_to_mdyyyy(iso)  # 'M/D/YYYY'
+    # find the date column by extracting MDY from each header cell
     date_col = None
     for c in df.columns:
-        if _extract_date_str(c)==md:
-            date_col = c; break
+        if _extract_date_str(c) == md:
+            date_col = c
+            break
     if not date_col:
         raise RuntimeError(f"Date {iso} not found in header.")
-    # find MS column
-    ms_col = None
-    for c in df.columns:
-        if str(c).strip().lower() in ("ms level","ms","mslevel"):
-            ms_col = c; break
-    first_col = None; last_col=None
-    for c in df.columns:
-        s = str(c).strip().lower()
-        if s in ("name first","first name","firstname","first","namefirst"): first_col=c
-        if s in ("name last","last name","lastname","last","namelast"): last_col=c
-    out = {"Present":[], "FTR":[], "Excused":[]}
-    for _, row in df.iterrows():
-        status = _classify_status(row.get(date_col,""))
-        if status in out:
-            name = f"{row.get(first_col,'').strip()} {row.get(last_col,'').strip()}".strip()
-            ms = str(row.get(ms_col,"")).strip()
-            out[status].append(f"{name} (MS{ms})")
-    for k in out: out[k].sort(key=lambda s: s.split(" ")[-1].lower())
-    return out
+    ...
+
 
 def build_leaderboards_like_ui95(df: pd.DataFrame, cadets: list):
     # cadets = [{"Name":..., "MS":...}]
@@ -296,33 +309,74 @@ def build_leaderboards_like_ui95(df: pd.DataFrame, cadets: list):
         boards[f"MS{ms}"] = rows[:20]
     return boards
 
+def _today_label(event_suffix="PT"):
+    from datetime import datetime
+    now = datetime.now()
+    return f"{now.month}/{now.day}/{now.year} + {event_suffix}"
+
+def add_date_column_for_sections(event_suffix="PT"):
+    """Append today's 'M/D/YYYY + suffix' to BOTH header rows (GSU & ULM)."""
+    ws = _open_ws()
+    rows = ws.get_all_values()
+    gsu_i = GSU_HEADER_ROW
+    ulm_i = ULM_HEADER_ROW
+    header_gsu = rows[gsu_i]
+    header_ulm = rows[ulm_i]
+
+    label = _today_label(event_suffix)
+
+    # GSU
+    ws.update_cell(gsu_i+1, len(header_gsu)+1, label)
+    # ULM
+    ws.update_cell(ulm_i+1, len(header_ulm)+1, label)
+
+    # return the ISO we will use in forms
+    m, d, y = label.split("+")[0].strip().split("/")
+    iso = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+    return {"label": label, "iso": iso}
+
+
 # ---- Update cell (writer) ----
 def update_attendance_cell(cadet_name: str, iso_date: str, status: str, section="ANY"):
     ws = _open_ws()
-    # Find the row for cadet
     rows = ws.get_all_values()
     hdr_i, header = detect_header_row(rows)
-    first_i = None; last_i=None
-    for j,h in enumerate(header):
-        s=str(h).strip().lower()
-        if s in ("name first","first name","firstname","first","namefirst"): first_i=j
-        if s in ("name last","last name","lastname","last","namelast"): last_i=j
-    date_col=None
-    md = _extract_date_str(iso_date) if "/" in iso_date else f"{int(iso_date.split('-')[1]):02d}/{int(iso_date.split('-')[2]):02d}/{iso_date.split('-')[0]}"
-    for j,h in enumerate(header):
-        if _extract_date_str(h)==md:
-            date_col=j; break
-    if date_col is None: raise RuntimeError("Date column not found.")
-    target_row=None
-    fn, ln = cadet_name.split(" ",1) if " " in cadet_name else (cadet_name, "")
-    for i,r in enumerate(rows[hdr_i+1:], start=hdr_i+2):
-        if i<=ULM_HEADER_ROW and section.upper()=="ULM": continue
-        if i>ULM_HEADER_ROW and section.upper()=="GSU": continue
+
+    # find first/last indices
+    first_i = last_i = None
+    for j, h in enumerate(header):
+        s = str(h).strip().lower()
+        if s in ("name first","first name","firstname","first","namefirst"): first_i = j
+        if s in ("name last","last name","lastname","last","namelast"):   last_i  = j
+
+    # resolve date column
+    date_col = None
+    if iso_date == "__TODAY__":
+        # use the last cell in the detected header
+        date_col = len(header) - 1
+    else:
+        md = _iso_to_mdyyyy(iso_date)  # 'M/D/YYYY'
+        for j, h in enumerate(header):
+            if _extract_date_str(h) == md:
+                date_col = j; break
+    if date_col is None:
+        raise RuntimeError("Date column not found.")
+
+    # locate cadet row (respect section split)
+    fn, ln = cadet_name.split(" ", 1) if " " in cadet_name else (cadet_name, "")
+    target_row = None
+    for i, r in enumerate(rows[hdr_i+1:], start=hdr_i+2):
+        # section gate
+        if i <= ULM_HEADER_ROW and section.upper() == "ULM":   continue
+        if i >  ULM_HEADER_ROW and section.upper() == "GSU":   continue
         f = (r[first_i] if first_i is not None and first_i < len(r) else "").strip()
-        l = (r[last_i] if last_i is not None and last_i < len(r) else "").strip()
-        if f.lower()==fn.lower() and l.lower()==ln.lower():
-            target_row=i; break
+        l = (r[last_i]  if last_i  is not None and last_i  < len(r) else "").strip()
+        if f.lower() == fn.lower() and l.lower() == ln.lower():
+            target_row = i; break
+
     if not target_row:
         return False
-    ws.update_cell(target_row, date_col+1, status)  # gspread is 1-indexed
+
+    ws.update_cell(target_row, date_col+1, status)  # 1-indexed
     return True
+
