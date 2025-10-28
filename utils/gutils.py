@@ -24,6 +24,98 @@ WEEKDAY_CANON = {
     "thursday": "Thursday",
     "friday": "Friday",
 }
+
+
+# utils/gutils.py
+from datetime import datetime, timezone, timedelta
+import logging
+
+log = logging.getLogger("rotc")
+
+# If you already centralize these somewhere, reuse them:
+PT_SUFFIX = "— PT"     # keep the exact long dash the sheet uses
+LAB_SUFFIX = "— LAB"   # example if you later use it
+
+# Your code already has a client to read/write the roster tab.
+# I’ll assume you expose two *section matrices* (GSU/ULM) via names or ranges.
+# Edit these to the exact tab names or ranges you use for each school matrix.
+SECTION_MATRICES = {
+    "GSU": { "tab": "Attendance Roster (GSU)" },
+    "ULM": { "tab": "Attendance Roster (ULM)" },
+}
+
+def _today_local_iso() -> str:
+    """Return YYYY-MM-DD in your local (Central) date."""
+    # Render boxes run UTC; you want CST/CDT.
+    # Naive and good-enough: US Central = UTC-6/UTC-5 (we’ll use -6 to be safe year-round).
+    # If you already use pytz/zoneinfo, swap this for America/Chicago.
+    central = timezone(timedelta(hours=-6))
+    return datetime.now(central).date().isoformat()
+
+def _normalize_header_cell(s: str) -> str:
+    """Normalize a header cell to a bare ISO date (strip any suffix like ' — PT')."""
+    s = (s or "").strip()
+    # split at the first space or the em dash
+    for sep in [" — ", "–", "-", "  "]:
+        # keep the YYYY-MM-DD part if it starts the string
+        if len(s) >= 10 and s[:10].count("-") == 2:
+            return s[:10]
+    # last resort: if it looks like yyyy-mm-dd anywhere at start
+    if len(s) >= 10 and s[:10].count("-") == 2:
+        return s[:10]
+    return s
+
+def _ensure_date_column(sheet, tab_name: str, label: str) -> dict:
+    """
+    Idempotently append a new date column labeled `label` to the header row
+    of `tab_name` if it doesn't already exist. Returns {'label', 'iso', 'col_index'}.
+    """
+    # read header row
+    rows = sheet.values().get(spreadsheetId=SHEET_ID, range=f"{tab_name}!1:1").execute().get("values", [[]])
+    header = rows[0] if rows else []
+    bare = [_normalize_header_cell(h) for h in header]
+
+    iso = label[:10]  # first 10 chars are YYYY-MM-DD by construction
+
+    if iso in bare:
+        # already there (with *some* suffix) → reuse the existing column index
+        idx = bare.index(iso)
+        return {"label": header[idx], "iso": iso, "col_index": idx}
+
+    # not there → append a new header cell
+    new_header = header + [label]
+    sheet.values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{tab_name}!1:1",
+        valueInputOption="RAW",
+        body={"values": [new_header]},
+    ).execute()
+
+    return {"label": label, "iso": iso, "col_index": len(new_header) - 1}
+
+def add_date_column_for_sections(suffix: str = PT_SUFFIX) -> dict:
+    """
+    Create today's date column in BOTH GSU and ULM matrices.
+    `suffix` is the label suffix (e.g., '— PT').
+    Returns a dict you can show to the user: {'label','iso'} (same for both).
+    """
+    from googleapiclient.discovery import build  # use your existing client pattern
+    service = build("sheets", "v4", credentials=_get_creds_somehow())  # <- use your own creds accessor
+    sheet = service.spreadsheets().values()
+
+    iso = _today_local_iso()
+    label = f"{iso} {suffix}"
+
+    results = []
+    for section, meta in SECTION_MATRICES.items():
+        tab = meta["tab"]
+        info = _ensure_date_column(sheet, tab, label)
+        log.info("date column ensured for %s -> %s (%s col=%s)", section, tab, info["label"], info["col_index"])
+        results.append(info)
+
+    # sanity: they should both share the same iso/label
+    return {"label": label, "iso": iso}
+
 def _canon_weekday_from_header(h: str):
     s = (h or "").lower().replace("\n", " ").strip()
     # match if the word is present anywhere in the header cell
