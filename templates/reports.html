@@ -1,19 +1,39 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Reports</h2>
+<h2 class="page-title">Reports</h2>
 
-<form method="get" action="{{ url_for('reports_daily') }}" class="grid" style="align-items:end;">
-  <div>
-    <label for="date">Daily date (YYYY-MM-DD)</label>
-    <input id="date" name="date" placeholder="YYYY-MM-DD">
-    <small>Leave blank to get an empty result message.</small>
+<!-- Daily Report -->
+<section class="card">
+  <h3>Daily Report</h3>
+  <form method="get" action="{{ url_for('reports_daily') }}" class="form-row">
+    <label for="date">Pick a date</label>
+    <input
+      id="date"
+      name="date"
+      type="date"
+      value="{{ request.args.get('date', '') }}"
+      aria-label="Daily report date"
+      required
+    >
+    <button type="submit" class="btn">Show Daily</button>
+  </form>
+
+  {% if dates %}
+  <div class="muted" style="margin-top: .75rem;">Quick dates</div>
+  <div class="chip-row">
+    {% for d in dates %}
+      <a class="chip" href="{{ url_for('reports_daily') }}?date={{ d }}">{{ d }}</a>
+    {% endfor %}
   </div>
-  <div>
-    <button type="submit" style="margin-top:1.65rem;">Show Daily</button>
-  </div>
-</form>
+  {% endif %}
+</section>
 
-<hr>
+<hr class="divider">
 
-<p><a class="secondary" href="{{ url_for('weekly_report') }}">Open Weekly Report</a></p>
+<!-- Weekly Report -->
+<section class="card">
+  <h3>Weekly Report</h3>
+  <p class="muted">Shows the last training week (Mon–Fri) with available data.</p>
+  <a class="btn" href="{{ url_for('reports_weekly') }}">Open Weekly Report</a>
+</section>
 {% endblock %}
