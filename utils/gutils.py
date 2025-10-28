@@ -17,6 +17,21 @@ ATT_COLOR_PRESENT = os.environ.get("ATT_COLOR_PRESENT","#00FF00")
 ATT_COLOR_FTR     = os.environ.get("ATT_COLOR_FTR","#FF0000")
 ATT_COLOR_OTHER   = os.environ.get("ATT_COLOR_OTHER","#FFFF00")
 
+WEEKDAY_CANON = {
+    "monday": "Monday",
+    "tuesday": "Tuesday",
+    "wednesday": "Wednesday",
+    "thursday": "Thursday",
+    "friday": "Friday",
+}
+def _canon_weekday_from_header(h: str):
+    s = (h or "").lower().replace("\n", " ").strip()
+    # match if the word is present anywhere in the header cell
+    for key, canon in WEEKDAY_CANON.items():
+        if key in s:
+            return canon
+    return None
+    
 def load_service_account_from_env():
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON","").strip()
     if not raw:
@@ -158,6 +173,24 @@ def build_present_rates_by_ms(df: pd.DataFrame):
         out.append(row)
     return out
 
+def normalize_availability_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename = {}
+    for c in df.columns:
+        canon = _canon_weekday_from_header(str(c))
+        if canon:
+            rename[c] = canon
+        elif str(c).strip().lower() in ("first name","name first","firstname"):
+            rename[c] = "First Name"
+        elif str(c).strip().lower() in ("last name","name last","lastname"):
+            rename[c] = "Last Name"
+    out = df.rename(columns=rename)
+    # ensure FullName exists for UI sorting/links
+    if "First Name" in out.columns and "Last Name" in out.columns:
+        out["FullName"] = (out["First Name"].fillna("") + " " + out["Last Name"].fillna("")).str.strip()
+    elif "FullName" not in out.columns:
+        # best effort
+        out["FullName"] = out.iloc[:,0].astype(str)
+    return out
 def get_cadet_directory_rows():
     df = get_attendance_dataframe()
     # Build First Last and MS
@@ -189,16 +222,16 @@ def get_cadet_directory_rows():
     out.sort(key=lambda r: (r["Name"].split(" ")[-1].lower(), r["Name"].split(" ")[0].lower()))
     return out
 
+
 def get_availability_df():
-    if not AVAIL_CSV_URL:
-        raise RuntimeError("AVAILABILITY_CSV_URL not set.")
-    df = pd.read_csv(AVAIL_CSV_URL)
-    # Normalize a FullName column
-    cols = {c.lower(): c for c in df.columns}
-    first = df[cols.get("first name")].astype(str).str.strip() if "first name" in cols else ""
-    last  = df[cols.get("last name")].astype(str).str.strip() if "last name" in cols else ""
-    df["FullName"] = (first + " " + last).str.strip()
-    return df
+    url = os.environ.get("AVAILABILITY_CSV_URL", "").strip()
+    if not url:
+        raise RuntimeError("AVAILABILITY_CSV_URL not set")
+    df = pd.read_csv(url)
+    return normalize_availability_columns(df)
+
+
+
 
 def _parse_time_window(s):
     # Accepts '09:00-11:30', '0900-1130', '09 00 - 11 30'
@@ -211,18 +244,16 @@ def _parse_time_window(s):
 
 def find_cadet_availability(day: str, window: str):
     day_norm = (day or "").strip().lower()
-    # map a bunch of common variants to canonical column headers
-    day_alias = {
-        "m": "Monday", "mon": "Monday", "monday": "Monday",
-        "t": "Tuesday", "tu": "Tuesday", "tue": "Tuesday", "tues": "Tuesday", "tuesday": "Tuesday",
-        "w": "Wednesday", "wed": "Wednesday", "weds": "Wednesday", "wednesday": "Wednesday",
-        "th": "Thursday", "thu": "Thursday", "thur": "Thursday", "thurs": "Thursday", "thursday": "Thursday",
-        "f": "Friday", "fri": "Friday", "friday": "Friday",
+    alias = {
+        "m": "Monday","mon":"Monday","monday":"Monday",
+        "t":"Tuesday","tu":"Tuesday","tue":"Tuesday","tues":"Tuesday","tuesday":"Tuesday",
+        "w":"Wednesday","wed":"Wednesday","weds":"Wednesday","wednesday":"Wednesday",
+        "th":"Thursday","thu":"Thursday","thur":"Thursday","thurs":"Thursday","thursday":"Thursday",
+        "f":"Friday","fri":"Friday","friday":"Friday",
     }
-    col = day_alias.get(day_norm)
+    col = alias.get(day_norm)
     if not col:
-        # also allow prefix match like 'th' from 'Thursday'
-        for k, v in day_alias.items():
+        for k,v in alias.items():
             if day_norm.startswith(k):
                 col = v; break
     if not col:
@@ -248,9 +279,10 @@ def find_cadet_availability(day: str, window: str):
             except Exception:
                 continue
         if not busy:
-            hits.append({"name": row.get("FullName", ""), "row": row.to_dict()})
-    hits.sort(key=lambda r: r["name"].split(" ")[-1].lower())
+            hits.append({"name": row.get("FullName","").strip(), "row": row.to_dict()})
+    hits.sort(key=lambda r: r["name"].split()[-1].lower() if r["name"] else "")
     return hits
+
 
 
 def _iso_to_mdyyyy(iso):
@@ -337,6 +369,30 @@ def add_date_column_for_sections(event_suffix="PT"):
 
 
 # ---- Update cell (writer) ----
+def get_cadet_directory_rows():
+    """Return [{'Name': 'First Last', 'MS': '1'..'5'}] from Sheet 1."""
+    ws = _open_ws()
+    rows = ws.get_all_values()
+    hdr_i, header = detect_header_row(rows)
+    first_j = last_j = ms_j = None
+    for j, h in enumerate(header):
+        s = (h or "").strip().lower()
+        if s in ("name first","first name","firstname","first","namefirst"): first_j = j
+        if s in ("name last","last name","lastname","last","namelast"):      last_j = j
+        if "ms" in s and "level" in s: ms_j = j
+
+    out = []
+    for i in range(hdr_i+1, len(rows)):
+        r = rows[i]
+        fn = (r[first_j] if first_j is not None and first_j < len(r) else "").strip()
+        ln = (r[last_j]  if last_j  is not None and last_j  < len(r) else "").strip()
+        ms = (r[ms_j]    if ms_j    is not None and ms_j    < len(r) else "").strip()
+        name = (fn + " " + ln).strip()
+        if name:
+            out.append({"Name": name, "MS": ms})
+    return out
+
+
 def update_attendance_cell(cadet_name: str, iso_date: str, status: str, section="ANY"):
     ws = _open_ws()
     rows = ws.get_all_values()
