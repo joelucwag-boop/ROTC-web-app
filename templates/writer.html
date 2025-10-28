@@ -1,33 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Attendance Writer</h2>
-<form method="post">
-  <div class="grid">
-    <div><label>Cadet (First Last)</label><input name="cadet" required></div>
-    <div><label>Date</label>
-      <select name="date">
-        {% for d in dates %}<option value="{{ d.iso }}">{{ d.iso }} — {{ d.event }}</option>{% endfor %}
-      </select>
-    </div>
-    <div><label>Status</label>
-      <select name="status"><option>Present</option><option>FTR</option><option>Excused: NFR</option><option>Excused: NM</option><option>Excused: Other</option></select>
-    </div>
-    <div><label>Section</label>
-      <select name="section"><option>ANY</option><option>GSU</option><option>ULM</option></select>
-    </div>
+
+<!-- Create today's column in BOTH GSU and ULM -->
+<form method="post" action="{{ url_for('writer_create_today') }}" class="card" style="margin-bottom:1rem">
+  <label for="suffix">Create today's column (GSU + ULM)</label>
+  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+    <select id="suffix" name="suffix">
+      <option value="">(no suffix)</option>
+      <option>PT</option>
+      <option>LLAB</option>
+      <option>Class</option>
+    </select>
+    <button type="submit">Create</button>
   </div>
-  <button type="submit">Write</button>
-</form>
-<hr>
-<h3>Create Today's Column</h3>
-<form method="post" action="{{ url_for('writer_create_today') }}">
-  <div class="grid">
-    <div><label>Suffix (e.g., PT/LAB/Event)</label>
-      <input name="suffix" placeholder="PT"></div>
-  </div>
-  <button type="submit">Add today to both sections</button>
+  <small>Header label becomes <code>YYYY-MM-DD — suffix</code>. Reports match by the ISO date prefix.</small>
 </form>
 
-<p><a href="{{ url_for('writer_bulk') }}">Go to Bulk Writer</a></p>
-<p class="contrast">Admin password required.</p>
+<div class="card">
+  <p>Go to <a href="{{ url_for('writer_bulk') }}">Bulk Writer</a> to fill statuses for a date.</p>
+</div>
 {% endblock %}
