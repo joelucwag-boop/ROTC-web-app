@@ -243,11 +243,13 @@ def writer_create_today():
 # --- Bulk writer form ---
 @app.get("/writer/bulk")
 def writer_bulk():
-    if not session.get("admin_ok"): return require_admin()
+    if not session.get("admin_ok"): 
+        return require_admin()
     from utils.gutils import get_cadet_directory_rows
     date_iso = request.args.get("date") or "__TODAY__"
-    cadets = get_cadet_directory_rows()
+    cadets = get_cadet_directory_rows() or []
     return render_template("writer_bulk.html", cadets=cadets, date_iso=date_iso)
+
 
 # --- Bulk writer submit ---
 @app.post("/writer/bulk")
