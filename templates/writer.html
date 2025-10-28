@@ -1,23 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Attendance Writer</h2>
+<h2>Writer</h2>
+<p>This page lets you add today's date column to both attendance matrices (GSU & ULM).</p>
 
-<!-- Create today's column in BOTH GSU and ULM -->
-<form method="post" action="{{ url_for('writer_create_today') }}" class="card" style="margin-bottom:1rem">
-  <label for="suffix">Create today's column (GSU + ULM)</label>
-  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-    <select id="suffix" name="suffix">
-      <option value="">(no suffix)</option>
-      <option>PT</option>
-      <option>LLAB</option>
-      <option>Class</option>
-    </select>
-    <button type="submit">Create</button>
-  </div>
-  <small>Header label becomes <code>YYYY-MM-DD — suffix</code>. Reports match by the ISO date prefix.</small>
+<form method="post" action="{{ url_for('writer_create_today') }}" class="card">
+  <label for="suffix">Optional label suffix (e.g., "_PT" or "_LAB")</label>
+  <input id="suffix" name="suffix" placeholder="_PT">
+  <button type="submit">Create today’s date column</button>
 </form>
 
-<div class="card">
-  <p>Go to <a href="{{ url_for('writer_bulk') }}">Bulk Writer</a> to fill statuses for a date.</p>
-</div>
+<hr>
+
+<p><a href="{{ url_for('writer_bulk') }}">Bulk Writer</a></p>
 {% endblock %}
