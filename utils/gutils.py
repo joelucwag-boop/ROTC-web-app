@@ -3,7 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-
+import re, from typing import List, Dict
 log = logging.getLogger(__name__)
 
 # ---- Config ----
@@ -43,6 +43,35 @@ SECTION_MATRICES = {
     "GSU": { "tab": "Attendance Roster (GSU)" },
     "ULM": { "tab": "Attendance Roster (ULM)" },
 }
+
+
+# utils/gutils.py
+import re
+from datetime import datetime
+from typing import List, Dict
+
+def _find_header_col_index_by_iso(header_row: List[str], iso: str) -> int:
+    """
+    Return the index of the header whose text contains the ISO date (YYYY-MM-DD).
+    Works even if the header is like '2025-10-01 — PT' or 'PT 2025-10-01'.
+
+    Raises RuntimeError if no matching header is found.
+    """
+    target = iso.strip()
+    # quick exact match first
+    for i, h in enumerate(header_row):
+        if h == target:
+            return i
+
+    # tolerant match: look for the iso pattern *inside* the header text
+    pat = re.compile(r"\b" + re.escape(target) + r"\b")
+    for i, h in enumerate(header_row):
+        if isinstance(h, str) and pat.search(h):
+            return i
+
+    raise RuntimeError(f"Date {iso} not found in header.")
+
+
 
 def _today_local_iso() -> str:
     """Return YYYY-MM-DD in your local (Central) date."""
@@ -467,17 +496,86 @@ def _iso_to_mdyyyy(iso):
     y, m, d = (int(x) for x in iso.strip().split("-"))
     return f"{int(m)}/{int(d)}/{y}"
 
-def get_status_by_date_and_ms(df: pd.DataFrame, iso: str):
-    md = _iso_to_mdyyyy(iso)  # 'M/D/YYYY'
-    # find the date column by extracting MDY from each header cell
-    date_col = None
-    for c in df.columns:
-        if _extract_date_str(c) == md:
-            date_col = c
+# utils/gutils.py (same file)
+def get_status_by_date_and_ms(df, iso: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Given a pandas DataFrame of the Attendance Roster and an ISO date (YYYY-MM-DD),
+    return a dict keyed by MS level ('1'..'5'), each value is a list of {name, status}.
+
+    Assumptions the function is tolerant to:
+    - The date column header may contain extra text (e.g., '2025-10-01 — PT').
+    - The cadet name column may be one of: 'Cadet', 'Name', or ('First Name','Last Name').
+    - The MS level column may be 'MS' or 'MS Level' (values like '1','2','3','4','5').
+    - Blank cells are ignored; everything else is shown as text (e.g., 'Present', 'Absent', 'Excused …').
+    """
+    # Determine the date column index from the header labels (df.columns)
+    header = list(df.columns)
+    date_col_idx = _find_header_col_index_by_iso(header, iso)
+    date_col_name = header[date_col_idx]
+
+    # Figure out name and ms columns, tolerantly
+    cols_lower = {c.lower(): c for c in header}
+    name_col = None
+    if 'cadet' in cols_lower:
+        name_col = cols_lower['cadet']
+    elif 'name' in cols_lower:
+        name_col = cols_lower['name']
+    elif 'first name' in cols_lower and 'last name' in cols_lower:
+        # We will combine later
+        pass
+    else:
+        # Fall back: try common variants
+        for candidate in ('Full Name', 'Student', 'Last, First'):
+            if candidate in header:
+                name_col = candidate
+                break
+
+    ms_col = None
+    for key in ('ms', 'ms level', 'ms_level'):
+        if key in cols_lower:
+            ms_col = cols_lower[key]
             break
-    if not date_col:
-        raise RuntimeError(f"Date {iso} not found in header.")
-    ...
+
+    # Build a normalized view of rows: name, ms, status_for_date
+    records = []
+    for _, row in df.iterrows():
+        # name
+        if name_col:
+            nm = str(row.get(name_col, '')).strip()
+        else:
+            first = str(row.get(cols_lower.get('first name', ''), '')).strip()
+            last  = str(row.get(cols_lower.get('last name',  ''), '')).strip()
+            nm = (first + ' ' + last).strip()
+
+        if not nm:
+            continue
+
+        # ms level as '1'..'5' string (default '0' if missing)
+        ms_val = str(row.get(ms_col, '')).strip() if ms_col else ''
+        ms_val = ms_val if ms_val in ('1', '2', '3', '4', '5') else '0'
+
+        # status
+        status_raw = row.get(date_col_name, None)
+        if status_raw is None or (isinstance(status_raw, float) and str(status_raw) == 'nan'):
+            # skip empty cells
+            continue
+        status_txt = str(status_raw).strip()
+        if status_txt == '':
+            continue
+
+        records.append({'name': nm, 'ms': ms_val, 'status': status_txt})
+
+    # Group by MS level
+    out: Dict[str, List[Dict[str, str]]] = {lvl: [] for lvl in ('1','2','3','4','5')}
+    for rec in records:
+        if rec['ms'] in out:
+            out[rec['ms']].append({'name': rec['name'], 'status': rec['status']})
+        else:
+            # If MS missing/unknown, you can choose to drop or bucket it
+            # Here we drop unknown MS; change if you want a '0'/'Unknown' bucket.
+            pass
+
+    return out
 
 
 def build_leaderboards_like_ui95(df: pd.DataFrame, cadets: list):
