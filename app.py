@@ -4,11 +4,12 @@ from flask_login import login_required
 from datetime import datetime, date
 from utils.gutils import add_date_column_for_sections  # NEW
 from utils.gutils import (
-    get_attendance_dataframe, detect_header_row, list_attendance_dates,
-    build_present_rates_by_ms, get_cadet_directory_rows, get_availability_df,
-    find_cadet_availability, update_attendance_cell, get_status_by_date_and_ms,
-    load_service_account_from_env
+    normalize_date,
+    add_date_column_for_sections,
+    get_status_by_date_and_ms,
+    load_attendance_dataframe,
 )
+
 
 # app.py (top-of-file imports)
 from datetime import date, timedelta, datetime
