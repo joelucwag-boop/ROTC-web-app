@@ -87,6 +87,89 @@ def get_attendance_dataframe():
     df = pd.DataFrame(data[1:], columns=header)
     return df
 
+# utils/gutils.py
+from datetime import date as _date
+
+def _find_section_header_rows(rows):
+    """Return list of (row_idx, col_idx) where a header cell contains
+    'Date + event title' for each section (e.g., GSU and ULM)."""
+    hits = []
+    needle = "date + event title"
+    for i, r in enumerate(rows):
+        for j, cell in enumerate(r):
+            if needle in (cell or "").strip().lower():
+                hits.append((i, j))
+    return hits
+
+def add_date_column_for_sections(suffix: str = "PT"):
+    """
+    Ensure a date column exists for TODAY in *every* attendance section (GSU+ULM).
+    - If the label already exists in a section header row, it reuses that column.
+    - Otherwise it writes the label in the first empty header cell to the right.
+
+    Returns:
+      {
+        'label': 'YYYY-MM-DD — PT',
+        'iso': 'YYYY-MM-DD',
+        'sections': [
+          {'row': <1-based>, 'col': <1-based>, 'created': True|False},
+          ...
+        ]
+      }
+    """
+    ws = _open_ws()  # your existing helper for Sheet 1
+    values = ws.get_all_values()
+    if not values:
+        raise RuntimeError("Attendance sheet is empty.")
+
+    anchors = _find_section_header_rows(values)
+    if not anchors:
+        raise RuntimeError(
+            "Could not find any section headers (looking for 'Date + event title / status')."
+        )
+
+    iso = _date.today().isoformat()
+    label = f"{iso} — {suffix}"
+
+    sections_out = []
+
+    for (ri, cj) in anchors:
+        row = values[ri]
+        # 1) If today's label already present in this section header row, reuse it.
+        existing_col = None
+        for jj in range(cj, len(row)):
+            cell = (row[jj] or "").strip()
+            if not cell:
+                continue
+            # accept either exact match or same ISO prefix to be forgiving
+            if cell == label or cell.startswith(iso):
+                existing_col = jj
+                break
+
+        if existing_col is not None:
+            sections_out.append({'row': ri + 1, 'col': existing_col + 1, 'created': False})
+            continue
+
+        # 2) Otherwise, append to first empty cell after the last non-empty header cell.
+        last_nonempty = cj - 1
+        for jj in range(cj, len(row)):
+            if (row[jj] or "").strip():
+                last_nonempty = jj
+        target_col = last_nonempty + 1
+
+        # pad the row locally so indexing is safe
+        if target_col >= len(row):
+            row.extend([""] * (target_col - len(row) + 1))
+            values[ri] = row
+
+        # write the label for this section
+        ws.update_cell(ri + 1, target_col + 1, label)
+        sections_out.append({'row': ri + 1, 'col': target_col + 1, 'created': True})
+
+    return {"label": label, "iso": iso, "sections": sections_out}
+
+
+
 def list_attendance_dates():
     ws = _open_ws()
     rows = ws.get_all_values()
