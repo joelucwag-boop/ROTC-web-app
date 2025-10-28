@@ -1,17 +1,47 @@
 {% extends "base.html" %}
 {% block content %}
-<h3>Weekly snapshot (last 7 available dates)</h3>
-{% for iso in dates %}
-<details>
-  <summary>{{ iso }}</summary>
-  <div class="grid">
-    {% for k, arr in rows[iso].items() %}
-    <article>
-      <h4>{{ k }}</h4>
-      {% for name in arr %}<span class="chip">{{ name }}</span>{% endfor %}
-    </article>
-    {% endfor %}
-  </div>
-</details>
-{% endfor %}
+<h2>Weekly Report</h2>
+
+{% if dates and rows %}
+  {% for iso in dates %}
+    {% set day = rows.get(iso, {}) %}
+    <section style="margin-block:1.25rem;">
+      <h3 style="margin:0 0 .25rem 0;">{{ iso }}</h3>
+
+      {% if day and day.items %}
+        <div class="grid">
+          {% for bucket, people in day.items() %}
+            <article class="contrast">
+              <h4 style="margin:.25rem 0;">{{ bucket }}</h4>
+              {% if people %}
+                <ul style="margin:.25rem 0 0 1rem;">
+                  {% for p in people %}
+                    <li>
+                      {{ (p.name if p is mapping else "") 
+                         or (p.Name if p is mapping else "")
+                         or p }}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <p style="margin:.25rem 0 0;">None</p>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <article class="contrast">
+          <p style="margin:.25rem 0;">No data for this day.</p>
+        </article>
+      {% endif %}
+    </section>
+  {% endfor %}
+{% else %}
+  <article class="contrast" style="margin-block:1rem;">
+    <h3 style="margin:0;">No recent dates found</h3>
+    <p style="margin:.5rem 0 0;">Once new attendance columns appear, this page will populate.</p>
+  </article>
+{% endif %}
+
+<p><a href="{{ url_for('reports_daily') }}">Go to Daily</a></p>
 {% endblock %}
