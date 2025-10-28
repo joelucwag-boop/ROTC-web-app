@@ -119,6 +119,8 @@ def api_rates():
         return jsonify({"error": str(e)}), 500
 
 # ---- Reports ----
+from utils.gutils import get_status_by_date_and_ms
+
 @app.get("/reports")
 def reports_menu():
     if not session.get("user_ok"): return require_user()
