@@ -99,7 +99,11 @@ def reports_menu():
     dates = list_attendance_dates()
     return render_template("reports.html", dates=dates)
 
-@app.get("/reports/daily")
+@app.get("/reports/daily-compat", endpoint="daily_report")
+def _daily_compat():
+    return reports_daily()
+
+@app.get("/reports/daily", endpoint="reports_daily")
 def reports_daily():
     if not session.get("user_ok"): 
         return require_user()
