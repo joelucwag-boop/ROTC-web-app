@@ -9,6 +9,7 @@ from utils.gutils import (
     get_status_by_date_and_ms,
     load_attendance_dataframe,
 )
+from utils.gutils import load_attendance_dataframe as get_attendance_dataframe
 
 
 # app.py (top-of-file imports)
