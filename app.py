@@ -12,9 +12,8 @@ from utils.gutils import (
 
 
 # app.py (top-of-file imports)
-from datetime import date, timedelta, datetime
-from flask import Flask, render_template, request, redirect, url_for, flash
-# safe import: if flask_login isn’t installed, noop the decorator
+from datetime import date, timedelta
+from flask import render_template, request, redirect, url_for, flash
 try:
     from flask_login import login_required
 except Exception:
@@ -24,8 +23,9 @@ from utils.gutils import (
     normalize_date,
     add_date_column_for_sections,
     get_status_by_date_and_ms,
-    load_attendance_dataframe,  # you can point this at whatever you already use
+    load_attendance_dataframe,
 )
+
 
 
 # app.py (routes)
@@ -194,10 +194,9 @@ def api_rates():
 from utils.gutils import get_status_by_date_and_ms
 
 @app.get("/reports")
+@login_required
 def reports_menu():
-    if not session.get("user_ok"): return require_user()
-    dates = list_attendance_dates()
-    return render_template("reports.html", dates=dates)
+    return render_template("reports.html")
 
 @app.get("/reports/daily-compat", endpoint="daily_report")
 def _daily_compat():
@@ -206,39 +205,41 @@ def _daily_compat():
 @app.get("/reports/daily")
 @login_required
 def reports_daily():
-    raw = request.args.get("date", "")
-    iso = _parse_any_date_to_iso(raw)
-    if raw and not iso:
-        return render_template("error.html", message=f"Could not parse date '{raw}'. Try YYYY-MM-DD."), 400
-    try:
-        # your existing dataframe loader
-        df = load_attendance_dataframe()
-        rows = get_status_by_date_and_ms(df, iso) if iso else {}
-        return render_template("report_daily.html", iso=iso, rows=rows)
-    except Exception as e:
-        current_app.logger.error("daily report error", exc_info=True)
-        return render_template("error.html", message=str(e)), 500
+    iso = normalize_date(request.args.get("date", ""))
+    rows = {}
+    err = None
+    if iso:
+        try:
+            df = load_attendance_dataframe()
+            rows = get_status_by_date_and_ms(df, iso)
+        except Exception as e:
+            err = str(e)
+    return render_template("daily.html", date=iso, rows=rows, error=err)
+
 
 
 @app.get("/reports/weekly")
+@login_required
 def weekly_report():
-    if not session.get("user_ok"): 
-        return require_user()
     try:
-        df = get_attendance_dataframe()
-        date_objs = list_attendance_dates() or []
-        dates = [d["iso"] for d in date_objs][-7:]
-        rows = {}
-        for iso in dates:
+        df = load_attendance_dataframe()
+    except Exception:
+        df = None
+
+    today = date.today()
+    dates = [(today - timedelta(days=i)).isoformat() for i in range(0, 7)]
+    items = []
+    for iso in dates:
+        rows = None
+        msg = None
+        if df:
             try:
-                val = get_status_by_date_and_ms(df, iso) or {}
-                rows[iso] = val
+                rows = get_status_by_date_and_ms(df, iso)
             except Exception as e:
-                logging.getLogger("rotc").warning("weekly skip %s: %s", iso, e)
-        return render_template("weekly.html", rows=rows, dates=list(rows.keys()))
-    except Exception as e:
-        log.exception("weekly report error")
-        return render_template("error.html", msg=str(e)), 500
+                msg = str(e)
+        items.append({"date": iso, "rows": rows, "message": msg})
+    return render_template("weekly.html", items=items)
+
 
 def _safe_has_date(header, iso):
     try:
@@ -343,14 +344,13 @@ def writer_post():
 @app.post("/writer/create-today")
 @login_required
 def writer_create_today():
-    suffix = request.form.get("suffix", "— PT").strip()
-    try:
-        info = add_date_column_for_sections(suffix)  # {'label','iso'}
-        flash(f"Created/verified {info['label']} in both GSU & ULM.", "success")
-        return redirect(url_for("writer"))
-    except Exception as e:
-        current_app.logger.error("create-today error", exc_info=True)
-        return render_template("error.html", message=str(e)), 500
+    suffix = (request.form.get("suffix") or "").strip()
+    info = add_date_column_for_sections(suffix)
+    flash(f"Created '{info['label']}' for GSU and ULM.")
+    return redirect(url_for("writer_bulk", date=info["iso"]))
+
+# If you don’t have writer_bulk yet, keep your existing route name/signature.
+# This just ensures the button returns you to bulk editor focused on the new date.
 
 
 # --- Bulk writer form ---
