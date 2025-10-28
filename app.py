@@ -100,34 +100,35 @@ def reports_menu():
     return render_template("reports.html", dates=dates)
 
 @app.get("/reports/daily")
-def daily_report():
-    if not session.get("user_ok"): return require_user()
-    wants = request.args.get("date")
+def reports_daily():
+    if not session.get("user_ok"): 
+        return require_user()
+    iso = request.args.get("date", "").strip()
     try:
         df = get_attendance_dataframe()
-        data = get_status_by_date_and_ms(df, wants)
-        return render_template("daily.html", date=wants, buckets=data)
+        rows = get_status_by_date_and_ms(df, iso) if iso else {}
+        if rows is None:
+            rows = {}
+        return render_template("daily.html", rows=rows, iso=iso)
     except Exception as e:
         log.exception("daily report error")
         return render_template("error.html", msg=str(e)), 500
 
 @app.get("/reports/weekly")
 def weekly_report():
-    if not session.get("user_ok"): return require_user()
+    if not session.get("user_ok"): 
+        return require_user()
     try:
         df = get_attendance_dataframe()
-        date_objs = list_attendance_dates()
-        if not date_objs:
-            return render_template("weekly.html", rows={}, dates=[])
-        dates = [d["iso"] for d in date_objs][-7:]  # last up to 7
+        date_objs = list_attendance_dates() or []
+        dates = [d["iso"] for d in date_objs][-7:]
         rows = {}
         for iso in dates:
             try:
-                rows[iso] = get_status_by_date_and_ms(df, iso)
+                val = get_status_by_date_and_ms(df, iso) or {}
+                rows[iso] = val
             except Exception as e:
-                # skip dates that can’t resolve (keeps page rendering)
                 logging.getLogger("rotc").warning("weekly skip %s: %s", iso, e)
-                continue
         return render_template("weekly.html", rows=rows, dates=list(rows.keys()))
     except Exception as e:
         log.exception("weekly report error")
