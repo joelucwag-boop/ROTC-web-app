@@ -3,7 +3,10 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-import re, from typing import List, Dict
+import re
+from typing import List, Dict
+from datetime import datetime
+
 log = logging.getLogger(__name__)
 
 # ---- Config ----
