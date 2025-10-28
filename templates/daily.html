@@ -1,34 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Daily Report</h2>
-<p class="muted">Date: <strong>{{ iso or "—" }}</strong></p>
 
-{% if rows and rows.items %}
-  {% for bucket, people in rows.items() %}
-    <article class="contrast" style="margin-block:1rem;">
-      <h3 style="margin:0;">{{ bucket }}</h3>
-      {% if people %}
-        <ul style="margin:.5rem 0 0 1rem;">
-          {% for p in people %}
-            <li>
-              {# Handle list of dicts OR list of strings gracefully #}
-              {{ (p.name if p is mapping else "") 
-                 or (p.Name if p is mapping else "")
-                 or p }}
-            </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p style="margin:.5rem 0 0;">None</p>
-      {% endif %}
-    </article>
-  {% endfor %}
-{% else %}
-  <article class="contrast" style="margin-block:1rem;">
-    <h3 style="margin:0;">No data</h3>
-    <p style="margin:.5rem 0 0;">No attendance found for this date.</p>
-  </article>
+{% if error %}
+  <div class="alert">{{ error }}</div>
 {% endif %}
 
-<p><a href="{{ url_for('weekly_report') }}">Back to Weekly</a></p>
+{% if not date %}
+  <p>Enter a date on the Reports page.</p>
+{% else %}
+  <h3>{{ date }}</h3>
+  {% if rows and rows|length %}
+    {% for ms in ['1','2','3','4','5'] %}
+      <div class="card" style="margin-bottom:0.75rem">
+        <h4>MS{{ ms }}</h4>
+        {% set group = rows.get(ms, []) %}
+        {% if not group %}
+          <p>No rows.</p>
+        {% else %}
+          <ul>
+            {% for r in group %}
+              <li>{{ r.name }} — {{ r.status or '—' }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No data for this day.</p>
+  {% endif %}
+{% endif %}
 {% endblock %}
