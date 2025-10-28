@@ -1,24 +1,95 @@
-{% extends "base.html" %}
-{% block content %}
-<h2>Attendance Dashboard</h2>
-<canvas id="trend" height="120"></canvas>
+<!-- In dashboard.html, below your canvas -->
+<div style="margin:12px 0;">
+  <label for="smoothRange" style="display:block;margin-bottom:6px;">
+    Smoothness <span id="smoothLabel">0%</span>
+  </label>
+  <input id="smoothRange" type="range" min="0" max="100" value="0" step="1" style="width:100%;">
+</div>
+
+<canvas id="attChart" height="120"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
-const rates = {{ rates_json | safe }};
-const labels = rates.map(r => r.iso + (r.event? " — "+r.event : ""));
-const ds = (key, label) => ({
-  label: label,
-  data: rates.map(r => r[key]),
-  borderWidth: 2,
-  fill: false,
-  tension: 0.3
-});
-new Chart(document.getElementById('trend'), {
-  type: 'line',
-  data: {
-    labels: labels,
-    datasets: [ds('MS1','MS1'), ds('MS2','MS2'), ds('MS3','MS3'), ds('MS4','MS4'), ds('AVG','Average')]
-  },
-  options: {responsive:true, scales:{y:{title:{display:true, text:'Present %'}}}}
-});
+(async function() {
+  // 1) Fetch your raw time series (labels + values) from a JSON endpoint.
+  //    If you don’t have one yet, see Option B below for a tiny Flask route.
+  const res = await fetch("/api/attendance_trend"); 
+  const raw = await res.json(); // {labels: [...], values: [...]}
+  const labels = raw.labels;
+  const values = raw.values; // array of numbers
+  const N = values.length;
+
+  // Precompute cumulative sum for O(1) moving average
+  const csum = new Array(N+1).fill(0);
+  for (let i=0; i<N; i++) csum[i+1] = csum[i] + (Number(values[i]) || 0);
+
+  function movingAverage(vals, w) {
+    if (w <= 1) return vals.slice();
+    const out = new Array(vals.length).fill(null);
+    const half = Math.floor(w/2);
+    for (let i=0; i<vals.length; i++) {
+      let L = Math.max(0, i-half);
+      let R = Math.min(vals.length-1, i+half);
+      const cnt = (R - L + 1);
+      const sum = csum[R+1] - csum[L];
+      out[i] = sum / cnt;
+    }
+    return out;
+  }
+
+  // Optional: fractional smoothing between two window sizes for silky interpolation
+  function smoothFraction(t01) {
+    // map t∈[0,1] -> window in [1,N]
+    const fwin = 1 + t01 * (N - 1);
+    const wLow = Math.max(1, Math.floor(fwin));
+    const wHigh = Math.min(N, wLow + 1);
+    const frac = fwin - wLow;
+    if (wLow === wHigh) return movingAverage(values, wLow);
+    const low = movingAverage(values, wLow);
+    const high = movingAverage(values, wHigh);
+    return low.map((v, i) => v*(1-frac) + high[i]*frac);
+  }
+
+  // 2) Build the chart
+  const ctx = document.getElementById("attChart");
+  const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Attendance",
+        data: values,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0 // keep raw as straight lines; smoothing is in the data
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: { ticks: { autoSkip: true, maxRotation: 0 } },
+        y: { beginAtZero: true }
+      },
+      plugins: {
+        legend: { display: true },
+        tooltip: { enabled: true }
+      }
+    }
+  });
+
+  // 3) Wire the slider
+  const range = document.getElementById("smoothRange");
+  const label = document.getElementById("smoothLabel");
+  const update = () => {
+    const t = Number(range.value)/100;      // 0..1
+    label.textContent = `${range.value}%`;  // UI
+    const smoothed = smoothFraction(t);
+    chart.data.datasets[0].data = smoothed;
+    chart.update("none"); // no animation for snappy feel
+  };
+  range.addEventListener("input", update);
+  update(); // initial
+})();
 </script>
-{% endblock %}
