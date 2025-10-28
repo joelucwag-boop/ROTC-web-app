@@ -6,7 +6,10 @@ from datetime import datetime
 import re
 from typing import List, Dict
 from datetime import datetime
-
+from __future__ import annotations
+import os
+from typing import List, Dict, Any, Tuple
+from datetime import datetime, date, timedelta
 log = logging.getLogger(__name__)
 
 # ---- Config ----
@@ -714,10 +717,7 @@ def update_attendance_cell(cadet_name: str, iso_date: str, status: str, section=
 
 
 # utils/gutils.py
-from __future__ import annotations
-import os
-from typing import List, Dict, Any, Tuple
-from datetime import datetime, date, timedelta
+
 
 # ---------- EDIT THESE TO MATCH YOUR SHEET ----------
 ATTENDANCE_SHEET_ID = os.getenv("ATTENDANCE_SHEET_ID", "").strip() or "PUT_YOUR_SHEET_ID_HERE"
