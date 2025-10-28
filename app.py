@@ -62,6 +62,30 @@ except ImportError:
     def login_user(*args, **kwargs): ...
     def logout_user(*args, **kwargs): ...
 
+# ---- Compatibility shims so existing routes keep working ----
+from utils import gutils as gu
+
+# Old name used by dashboard
+def get_attendance_dataframe():
+    return gu.load_attendance_dataframe()
+
+# Old name used by /directory (search box etc.)
+def get_cadet_directory_rows(query: str):
+    idx = gu.load_directory_index()          # [{'name','ms','school','phone',...}, ...]
+    q = (query or "").strip().lower()
+    if not q:
+        return idx
+    def matches(row):
+        blob = " ".join(str(row.get(k,"")) for k in ("name","school","ms","phone","email","major"))
+        return q in blob.lower()
+    return [r for r in idx if matches(r)]
+
+# Old name used by /availability (detail lookup)
+def find_cadet_availability(name_or_rid: str):
+    return gu.lookup_availability_record(name_or_rid)
+# --------------------------------------------------------------
+
+
 # ---- Flask setup ----
 app = Flask(__name__)
 if FLASK_LOGIN_AVAILABLE:
@@ -84,20 +108,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 
 # app.py (routes)
-'''
-@app.route("/writer/create-today", methods=["POST"])
-@login_required
-def writer_create_today():
-    """
-    Creates today's date column in BOTH GSU *and* ULM attendance matrices.
-    Expects an optional 'suffix' form field (e.g., 'PT' or 'LLAB') to append.
-    Redirects back to bulk writer set to the created ISO date.
-    """
-    suffix = (request.form.get("suffix") or "").strip()
-    info = add_date_column_for_sections(suffix)  # {'label','iso'}
-    flash(f"Created date column '{info['label']}' for GSU and ULM.")
-    return redirect(url_for("writer_bulk", date=info["iso"]))
-'''
+
 def require_user():
     if not session.get("user_ok"):
         return redirect(url_for("login", next=request.path))
@@ -394,10 +405,16 @@ from utils.gutils import add_date_column_for_sections
 
 @app.post("/writer/create-today")
 def writer_create_today():
-    suffix = request.form.get("suffix", "").strip()
-    info = add_date_column_for_sections(suffix)  # writes date to BOTH GSU + ULM
-    flash(f"Created/verified date column '{info['label']}' ({info['iso']}) for GSU & ULM.", "success")
-    return redirect(url_for("writer"))  # back to the writer page
+    try:
+        # optional suffix like "_LAB" -> form field named 'suffix'
+        suffix = (request.form.get("suffix") or "").strip()
+        info = gu.add_date_column_for_sections(suffix)  # {'iso','label','added_to':['GSU','ULM']}
+        flash(f"Created column {info['label']} on {', '.join(info['added_to'])}.", "success")
+        return redirect(url_for("writer_page"))
+    except Exception as e:
+        current_app.logger.error("create-today error", exc_info=True)
+        return render_template("error.html", message=str(e)), 500
+
 
 
 # If you don’t have writer_bulk yet, keep your existing route name/signature.
