@@ -9,9 +9,45 @@ from utils.gutils import (
     find_cadet_availability, update_attendance_cell, get_status_by_date_and_ms,
     load_service_account_from_env
 )
+# --- Auth imports (guarded so app can boot even if Flask-Login is missing) ---
+try:
+    from flask_login import (
+        LoginManager,
+        login_user,
+        logout_user,
+        login_required,
+        current_user,
+    )
+    FLASK_LOGIN_AVAILABLE = True
+except ImportError:
+    # Soft shims so routes don’t crash during deploy if dependency isn’t installed yet.
+    FLASK_LOGIN_AVAILABLE = False
+
+    def login_required(fn):
+        return fn  # no-op decorator
+
+    class _DummyUser:
+        is_authenticated = False
+        is_active = False
+        is_anonymous = True
+        get_id = lambda self: None
+
+    current_user = _DummyUser()
+
+    # Define no-op stand-ins (only if you reference them)
+    def login_user(*args, **kwargs): ...
+    def logout_user(*args, **kwargs): ...
 
 # ---- Flask setup ----
 app = Flask(__name__)
+if FLASK_LOGIN_AVAILABLE:
+    login_manager = LoginManager(app)
+    login_manager.login_view = "login"  # change if your login route name differs
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        # TODO: return your User object by id
+        return None
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24))
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL","INFO").upper()
