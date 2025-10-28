@@ -10,7 +10,8 @@ from utils.gutils import (
     load_attendance_dataframe,
 )
 from utils.gutils import load_attendance_dataframe as get_attendance_dataframe
-
+from flask import jsonify
+import pandas as pd
 
 # app.py (top-of-file imports)
 from datetime import date, timedelta
@@ -181,6 +182,45 @@ def dashboard():
     except Exception as e:
         log.exception("dashboard error")
         return render_template("error.html", msg=str(e)), 500
+
+
+from flask import jsonify
+import pandas as pd
+
+@app.get("/api/attendance_trend")
+def api_attendance_trend():
+    """
+    Returns aggregated daily 'present' counts across GSU + ULM.
+    Robust to different status spellings: P, Present, p, etc.
+    Falls back to 0 if nothing matches.
+    """
+    df = load_attendance_dataframe()  # or get_attendance_dataframe if you did the alias
+
+    # Expecting a long-form dataframe like: name, ms, section, date (YYYY-MM-DD), status
+    # Make it resilient to column name casing.
+    cols = {c.lower(): c for c in df.columns}
+    date_col   = cols.get("date")   or "date"
+    status_col = cols.get("status") or "status"
+
+    # Normalize status to "present" boolean
+    def is_present(x):
+        s = str(x or "").strip().lower()
+        return s.startswith("p")  # 'p', 'present', 'PRESENT' etc.
+
+    work = df.copy()
+    work["present"] = work[status_col].map(is_present).astype(int)
+
+    # Group by date and sum present
+    grouped = (work.groupby(date_col, dropna=False)["present"]
+                    .sum()
+                    .reset_index()
+                    .sort_values(date_col))
+
+    labels = grouped[date_col].astype(str).tolist()
+    values = grouped["present"].astype(float).tolist()
+
+    return jsonify({"labels": labels, "values": values})
+
 
 # JSON endpoint for charts
 @app.get("/api/attendance/rates")
@@ -400,6 +440,10 @@ def writer_bulk_post():
             continue
     flash(f"Wrote {ok}/{total} selections.")
     return redirect(url_for("writer_bulk", date=date_iso))
+
+
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
