@@ -1,12 +1,34 @@
 {% extends "base.html" %}
 {% block content %}
-<h3>Daily report — {{ date }}</h3>
-<div class="grid">
-  {% for k, arr in buckets.items() %}
-  <article>
-    <h4>{{ k }}</h4>
-    {% for name in arr %}<span class="chip">{{ name }}</span>{% endfor %}
-  </article>
+<h2>Daily Report</h2>
+<p class="muted">Date: <strong>{{ iso or "—" }}</strong></p>
+
+{% if rows and rows.items %}
+  {% for bucket, people in rows.items() %}
+    <article class="contrast" style="margin-block:1rem;">
+      <h3 style="margin:0;">{{ bucket }}</h3>
+      {% if people %}
+        <ul style="margin:.5rem 0 0 1rem;">
+          {% for p in people %}
+            <li>
+              {# Handle list of dicts OR list of strings gracefully #}
+              {{ (p.name if p is mapping else "") 
+                 or (p.Name if p is mapping else "")
+                 or p }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p style="margin:.5rem 0 0;">None</p>
+      {% endif %}
+    </article>
   {% endfor %}
-</div>
+{% else %}
+  <article class="contrast" style="margin-block:1rem;">
+    <h3 style="margin:0;">No data</h3>
+    <p style="margin:.5rem 0 0;">No attendance found for this date.</p>
+  </article>
+{% endif %}
+
+<p><a href="{{ url_for('weekly_report') }}">Back to Weekly</a></p>
 {% endblock %}
