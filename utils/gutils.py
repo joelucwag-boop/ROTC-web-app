@@ -712,3 +712,214 @@ def update_attendance_cell(cadet_name: str, iso_date: str, status: str, section=
     ws.update_cell(target_row, date_col+1, status)  # 1-indexed
     return True
 
+
+# utils/gutils.py
+from __future__ import annotations
+import os
+from typing import List, Dict, Any, Tuple
+from datetime import datetime, date, timedelta
+
+# ---------- EDIT THESE TO MATCH YOUR SHEET ----------
+ATTENDANCE_SHEET_ID = os.getenv("ATTENDANCE_SHEET_ID", "").strip() or "PUT_YOUR_SHEET_ID_HERE"
+GSU_TAB_NAME = os.getenv("GSU_TAB_NAME", "GSU")         # worksheet/tab name for GSU matrix
+ULM_TAB_NAME = os.getenv("ULM_TAB_NAME", "ULM")         # worksheet/tab name for ULM matrix
+SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
+# ----------------------------------------------------
+
+# We use gspread to talk to Google Sheets
+# requirements.txt must include: gspread, google-auth
+import gspread
+from google.oauth2.service_account import Credentials
+
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+# -------------------- CLIENT --------------------
+def _get_gspread_client() -> gspread.Client:
+    """
+    Builds a gspread client from the service account JSON.
+    Works with:
+      - GOOGLE_APPLICATION_CREDENTIALS pointing to file
+      - A local file 'service_account.json'
+    """
+    if not os.path.exists(SERVICE_ACCOUNT_JSON):
+        # On Render, you can write the JSON key to a file before boot, or mount it.
+        raise FileNotFoundError(
+            f"Service account JSON not found at '{SERVICE_ACCOUNT_JSON}'. "
+            "Set GOOGLE_APPLICATION_CREDENTIALS or place service_account.json."
+        )
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=_SCOPES)
+    return gspread.authorize(creds)
+
+def _open_attendance_sheet() -> gspread.Spreadsheet:
+    if not ATTENDANCE_SHEET_ID or "PUT_YOUR_SHEET_ID_HERE" in ATTENDANCE_SHEET_ID:
+        raise RuntimeError("ATTENDANCE_SHEET_ID is not configured.")
+    gc = _get_gspread_client()
+    return gc.open_by_key(ATTENDANCE_SHEET_ID)
+
+def get_attendance_ws_for_section(section: str) -> gspread.Worksheet:
+    """
+    Returns a worksheet for either 'GSU' or 'ULM' based on constants above.
+    """
+    tab = GSU_TAB_NAME if section.upper() == "GSU" else ULM_TAB_NAME
+    ss = _open_attendance_sheet()
+    try:
+        return ss.worksheet(tab)
+    except gspread.WorksheetNotFound:
+        raise RuntimeError(f"Worksheet '{tab}' not found in attendance sheet.")
+
+# -------------------- UTILITIES --------------------
+def sheet_to_2dlist(ws: gspread.Worksheet) -> List[List[str]]:
+    """
+    Fetches the whole sheet as a 2D list. Empty trailing cells become ''.
+    """
+    return ws.get_all_values()
+
+def _header_union(h1: List[str], h2: List[str]) -> List[str]:
+    """
+    Returns the union of two headers, keeping order of h1 then any new from h2.
+    """
+    out = list(h1)
+    for x in h2:
+        if x not in out:
+            out.append(x)
+    return out
+
+def _row_to_dict(row: List[str], header: List[str]) -> Dict[str, str]:
+    return {header[i]: (row[i] if i < len(row) else "") for i in range(len(header))}
+
+def _dict_to_row(d: Dict[str, str], header: List[str]) -> List[str]:
+    return [d.get(col, "") for col in header]
+
+def _merge_two_matrices_union(df1: List[List[str]], df2: List[List[str]]) -> List[List[str]]:
+    """
+    Concatenate two matrices by UNION of headers. Rows are simply appended
+    (we don't try to de-duplicate cadets). Good enough for reporting.
+    """
+    if not df1 and not df2:
+        return []
+    if not df1:
+        return df2
+    if not df2:
+        return df1
+
+    h1 = df1[0]
+    h2 = df2[0]
+    header = _header_union(h1, h2)
+
+    def expand(df: List[List[str]]) -> List[List[str]]:
+        out = [header]
+        for r in df[1:]:
+            d = _row_to_dict(r, df[0])
+            out.append(_dict_to_row(d, header))
+        return out
+
+    e1 = expand(df1)
+    e2 = expand(df2)
+    # combine: header + rows1 + rows2
+    return [header] + e1[1:] + e2[1:]
+
+# -------------------- DATE HELPERS --------------------
+def normalize_date(raw: str) -> str:
+    """
+    Returns ISO 'YYYY-MM-DD' or '' if empty/invalid.
+    Accepts: YYYY-MM-DD, MM-DD-YYYY, MM/DD/YYYY, and common YYYY-DD-MM swap.
+    """
+    if not raw:
+        return ""
+    s = raw.strip()
+    for fmt in ("%Y-%m-%d", "%m-%d-%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except Exception:
+            pass
+    parts = s.split("-")
+    if len(parts) == 3:
+        y, a, b = parts
+        if len(y) == 4 and a.isdigit() and b.isdigit():
+            ay, by = int(a), int(b)
+            if ay > 12 and 1 <= by <= 12:
+                try:
+                    return date(int(y), by, ay).isoformat()
+                except Exception:
+                    pass
+    return ""
+
+def _find_header_col_index_by_iso(header_row: List[str], iso: str) -> int:
+    """
+    Finds the column that starts with the ISO date (prefix match),
+    e.g. header cell "2025-10-17 — PT" should match iso "2025-10-17".
+    """
+    for i, cell in enumerate(header_row):
+        c = (cell or "").strip()
+        if c.startswith(iso):
+            return i
+    return -1
+
+# -------------------- REPORT SHAPERS --------------------
+def get_status_by_date_and_ms(df: List[List[str]], iso: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    df: 2D list with header row. Col0=Name, Col1=MS level. Date columns labeled with ISO at start.
+    Returns {'1': [{'name','status'}], ... '5': [...]}
+    Raises if ISO column not found.
+    """
+    if not df or not df[0]:
+        return {"1": [], "2": [], "3": [], "4": [], "5": []}
+
+    header = df[0]
+    col = _find_header_col_index_by_iso(header, iso)
+    if col == -1:
+        raise RuntimeError(f"Date {iso} not found in header.")
+
+    out = {"1": [], "2": [], "3": [], "4": [], "5": []}
+    for r in df[1:]:
+        if not r:
+            continue
+        name = (r[0] if len(r) > 0 else "").strip()
+        ms = (r[1] if len(r) > 1 else "").strip()
+        status = (r[col] if len(r) > col else "").strip()
+        if ms in out:
+            out[ms].append({"name": name, "status": status})
+    return out
+
+# -------------------- WRITER: ADD DATE TO BOTH MATRICES --------------------
+def add_date_column_for_sections(suffix: str = "") -> Dict[str, str]:
+    """
+    Adds today's column to BOTH GSU and ULM tabs.
+    Header label is 'YYYY-MM-DD' or 'YYYY-MM-DD — {suffix}'.
+    Returns {'label': label, 'iso': iso}
+    Idempotent per tab.
+    """
+    iso = date.today().isoformat()
+    label = iso if not suffix else f"{iso} — {suffix}"
+
+    for section in ("GSU", "ULM"):
+        ws = get_attendance_ws_for_section(section)
+        header = ws.row_values(1)
+        if label in header:
+            continue
+        new_col = len(header) + 1 if header else 1
+        ws.update_cell(1, new_col, label)
+
+    return {"label": label, "iso": iso}
+
+# -------------------- LOAD DATA FOR REPORTS --------------------
+def load_attendance_dataframe() -> List[List[str]]:
+    """
+    Loads BOTH tabs and returns a single merged 2D matrix (header union).
+    Good enough for daily/weekly reporting.
+    """
+    ws_g = get_attendance_ws_for_section("GSU")
+    ws_u = get_attendance_ws_for_section("ULM")
+    df_g = sheet_to_2dlist(ws_g)
+    df_u = sheet_to_2dlist(ws_u)
+    if not df_g and not df_u:
+        return []
+    if not df_g:
+        return df_u
+    if not df_u:
+        return df_g
+    return _merge_two_matrices_union(df_g, df_u)
+
