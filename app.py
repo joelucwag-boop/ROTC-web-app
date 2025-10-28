@@ -28,20 +28,7 @@ from utils.gutils import (
 
 
 
-# app.py (routes)
 
-@app.route("/writer/create-today", methods=["POST"])
-@login_required
-def writer_create_today():
-    """
-    Creates today's date column in BOTH GSU *and* ULM attendance matrices.
-    Expects an optional 'suffix' form field (e.g., 'PT' or 'LLAB') to append.
-    Redirects back to bulk writer set to the created ISO date.
-    """
-    suffix = (request.form.get("suffix") or "").strip()
-    info = add_date_column_for_sections(suffix)  # {'label','iso'}
-    flash(f"Created date column '{info['label']}' for GSU and ULM.")
-    return redirect(url_for("writer_bulk", date=info["iso"]))
 
 
 # --- Auth imports (guarded so app can boot even if Flask-Login is missing) ---
@@ -92,6 +79,22 @@ log = logging.getLogger("rotc")
 # ---- Passwords ----
 APP_PASSWORD  = os.environ.get("APP_PASSWORD", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+
+# app.py (routes)
+
+@app.route("/writer/create-today", methods=["POST"])
+@login_required
+def writer_create_today():
+    """
+    Creates today's date column in BOTH GSU *and* ULM attendance matrices.
+    Expects an optional 'suffix' form field (e.g., 'PT' or 'LLAB') to append.
+    Redirects back to bulk writer set to the created ISO date.
+    """
+    suffix = (request.form.get("suffix") or "").strip()
+    info = add_date_column_for_sections(suffix)  # {'label','iso'}
+    flash(f"Created date column '{info['label']}' for GSU and ULM.")
+    return redirect(url_for("writer_bulk", date=info["iso"]))
 
 def require_user():
     if not session.get("user_ok"):
