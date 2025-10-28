@@ -2,201 +2,56 @@
 {% block content %}
 <h2>Bulk Attendance Writer</h2>
 
-<form method="post" action="{{ url_for('writer_bulk_post') }}" id="bulkForm">
-  <input type="hidden" name="date_iso" value="{{ date_iso or '__TODAY__' }}">
-
-  <div class="grid" style="align-items:end;">
-    <div>
-      <label>Date in sheet</label>
-      <input value="{{ date_iso or '__TODAY__' }}" disabled>
-      <small>If you just created today's column, this will be set automatically.</small>
-    </div>
-    <div>
-      <label>Section</label>
-      <select name="section" id="sectionSel">
-        <option value="ANY">ANY</option>
-        <option value="GSU">GSU</option>
-        <option value="ULM">ULM</option>
-      </select>
-    </div>
-    <div>
-      <label>Quick filter (type to filter names)</label>
-      <input id="filterBox" placeholder="e.g., Brown">
-    </div>
+<form method="get" class="card" style="margin-bottom:1rem">
+  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+    <label for="date">Date (ISO)</label>
+    <input id="date" name="date" value="{{ date or '' }}" placeholder="YYYY-MM-DD">
+    <label for="section">Section</label>
+    <select id="section" name="section">
+      <option value="GSU" {{ 'selected' if section=='GSU' else '' }}>GSU</option>
+      <option value="ULM" {{ 'selected' if section=='ULM' else '' }}>ULM</option>
+    </select>
+    <button type="submit">Load</button>
   </div>
-
-  <details style="margin:.5rem 0;">
-    <summary>Quick actions</summary>
-    <div class="grid" style="margin-top:.5rem;">
-      <button type="button" id="btnSelectAllPresent">Select ALL → Present</button>
-      <button type="button" id="btnSelectAllFTR">Select ALL → FTR</button>
-      <button type="button" id="btnClearAll">Clear ALL</button>
-    </div>
-    <small>Quick actions affect only visible (filtered) rows.</small>
-  </details>
-
-  {% if cadets and cadets|length > 0 %}
-  <div class="overflow-auto" style="max-height:65vh;border:1px solid var(--muted-border-color);border-radius:.5rem;">
-    <table>
-      <thead>
-        <tr>
-          <th style="min-width:220px;">Name</th>
-          <th style="min-width:60px;">MS</th>
-          <th style="min-width:110px;">Present</th>
-          <th style="min-width:110px;">FTR</th>
-          <th style="min-width:130px;">Excused</th>
-          <th style="min-width:260px;">Reason (optional, shown only if Excused)</th>
-        </tr>
-      </thead>
-      <tbody id="cadetBody">
-        {% for c in cadets %}
-        {% set nm = c.Name %}
-        <tr data-name="{{ nm|e }}">
-          <td><strong>{{ nm }}</strong></td>
-          <td>MS{{ c.MS or '' }}</td>
-          <td>
-            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="Present">Present</button>
-          </td>
-          <td>
-            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="FTR">FTR</button>
-          </td>
-          <td>
-            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="Excused">Excused</button>
-          </td>
-          <td>
-            <input name="reason__{{ nm }}" class="reason" placeholder="Optional reason when Excused" style="display:none;">
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- hidden inputs the JS will manage -->
-  <div id="hiddenInputs"></div>
-
-  <div style="margin-top:1rem;">
-    <button type="submit">Write Selections</button>
-  </div>
-
-  {% else %}
-    <article class="contrast" style="margin-block:1rem;">
-      <h3 style="margin:0;">No cadets found</h3>
-      <p style="margin:.5rem 0 0;">Sheet 1 didn’t return any rows. Confirm your header detection and name columns.</p>
-    </article>
-  {% endif %}
+  <small>Tip: click a status again to clear it.</small>
 </form>
 
-<script>
-(function(){
-  const hidden = document.getElementById('hiddenInputs');
-  const map = new Map(); // name -> "Present" | "FTR" | "Excused" | ""
-  const reasonVisibleFor = new Set();
+{% if error %}
+  <div class="alert">{{ error }}</div>
+{% endif %}
 
-  function findRowButtons(name) {
-    return [...document.querySelectorAll('button.toggle[data-name="'+CSS.escape(name)+'"]')];
-  }
-  function findReasonInput(name) {
-    return document.querySelector('input.reason[name="reason__'+name+'"]');
-  }
-
-  function setHidden(name, val) {
-    const id = "status__" + name;
-    let input = document.querySelector('input[name="'+id+'"]');
-    if (!input) {
-      input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = id;
-      hidden.appendChild(input);
-    }
-    input.value = val;
-  }
-  function clearHidden(name) {
-    const sel = 'input[name="status__'+name+'"]';
-    const el = document.querySelector(sel);
-    if (el) el.remove();
-  }
-
-  function updateReasonVisibility(name) {
-    const isExcused = (map.get(name) === "Excused");
-    const input = findReasonInput(name);
-    if (!input) return;
-    input.style.display = isExcused ? '' : 'none';
-    if (!isExcused) input.value = '';
-    if (isExcused) {
-      reasonVisibleFor.add(name);
-    } else {
-      reasonVisibleFor.delete(name);
-    }
-  }
-
-  function toggleButton(btn) {
-    const name = btn.dataset.name;
-    const val  = btn.dataset.val;
-    const rowBtns = findRowButtons(name);
-    const current = map.get(name) || "";
-    if (current === val) {
-      // deselect
-      map.set(name, "");
-      rowBtns.forEach(b => b.classList.remove('contrast'));
-      clearHidden(name);
-    } else {
-      map.set(name, val);
-      rowBtns.forEach(b => b.classList.remove('contrast'));
-      btn.classList.add('contrast');
-      setHidden(name, val);
-    }
-    updateReasonVisibility(name);
-  }
-
-  // bind row toggles
-  document.querySelectorAll('button.toggle').forEach(btn => {
-    btn.addEventListener('click', () => toggleButton(btn));
-  });
-
-  // quick filter
-  const filterBox = document.getElementById('filterBox');
-  const tbody = document.getElementById('cadetBody');
-  filterBox?.addEventListener('input', () => {
-    const q = (filterBox.value || "").toLowerCase().trim();
-    [...tbody.querySelectorAll('tr')].forEach(tr => {
-      const nm = (tr.dataset.name || "").toLowerCase();
-      tr.style.display = nm.includes(q) ? "" : "none";
-    });
-  });
-
-  // quick actions (affect only visible rows)
-  function applyToVisible(setTo) {
-    [...tbody.querySelectorAll('tr')].forEach(tr => {
-      if (tr.style.display === "none") return;
-      const name = tr.dataset.name;
-      const buttons = findRowButtons(name);
-      if (setTo === "") {
-        map.set(name, "");
-        buttons.forEach(b => b.classList.remove('contrast'));
-        clearHidden(name);
-      } else {
-        map.set(name, setTo);
-        buttons.forEach(b => {
-          b.classList.toggle('contrast', b.dataset.val === setTo);
-        });
-        setHidden(name, setTo);
-      }
-      updateReasonVisibility(name);
-    });
-  }
-  document.getElementById('btnSelectAllPresent')?.addEventListener('click', () => applyToVisible("Present"));
-  document.getElementById('btnSelectAllFTR')?.addEventListener('click', () => applyToVisible("FTR"));
-  document.getElementById('btnClearAll')?.addEventListener('click', () => applyToVisible(""));
-
-  // form submit guard: if Excused selected but user typed no reason, that's fine (optional)
-  // but we’ll trim whitespace in reasons to keep the sheet tidy.
-  document.getElementById('bulkForm')?.addEventListener('submit', () => {
-    reasonVisibleFor.forEach(name => {
-      const input = findReasonInput(name);
-      if (input) input.value = (input.value || "").trim();
-    });
-  });
-})();
-</script>
+{% if not roster %}
+  <p>Choose a date & section and click Load.</p>
+{% else %}
+  <form method="post">
+    <input type="hidden" name="date" value="{{ date }}">
+    <input type="hidden" name="section" value="{{ section }}">
+    <div style="max-height:60vh; overflow:auto; padding:0.25rem; border-radius:0.5rem; border:1px solid #333">
+      {% for row in roster %}
+        <div style="display:flex; gap:0.5rem; align-items:center; padding:0.35rem 0.5rem; border-bottom:1px solid #222">
+          <div style="min-width:18rem">{{ row.name }}</div>
+          <div class="seg" style="display:flex; gap:0.25rem">
+            {% set field = 's_' ~ loop.index0 %}
+            <input type="hidden" name="who_{{ loop.index0 }}" value="{{ row.name }}">
+            <input type="radio" id="{{ field }}_present"   name="{{ field }}" value="Present"   {{ 'checked' if row.status=='Present' else '' }}>
+            <label for="{{ field }}_present">Present</label>
+            <input type="radio" id="{{ field }}_unexcused" name="{{ field }}" value="Unexcused" {{ 'checked' if row.status=='Unexcused' else '' }}>
+            <label for="{{ field }}_unexcused">Unexcused</label>
+            <input type="radio" id="{{ field }}_excused"   name="{{ field }}" value="Excused"   {{ 'checked' if row.status=='Excused' else '' }}>
+            <label for="{{ field }}_excused">Excused</label>
+            <button type="button" onclick="
+              const r=document.getElementsByName('{{ field }}');
+              r.forEach(x=>x.checked=false);
+            ">Clear</button>
+          </div>
+          <input style="flex:1" name="note_{{ loop.index0 }}" placeholder="(optional) note for Excused" value="{{ row.note or '' }}">
+        </div>
+      {% endfor %}
+    </div>
+    <div style="margin-top:0.75rem">
+      <button type="submit">Save</button>
+    </div>
+  </form>
+{% endif %}
 {% endblock %}
+
