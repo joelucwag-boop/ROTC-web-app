@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 import os, json, re, logging
 import pandas as pd
 import gspread
@@ -6,7 +9,6 @@ from datetime import datetime
 import re
 from typing import List, Dict
 from datetime import datetime
-from __future__ import annotations
 import os
 from typing import List, Dict, Any, Tuple
 from datetime import datetime, date, timedelta
