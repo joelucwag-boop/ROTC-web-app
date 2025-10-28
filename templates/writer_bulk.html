@@ -2,61 +2,138 @@
 {% block content %}
 <h2>Bulk Attendance Writer</h2>
 
-<form method="post" action="{{ url_for('writer_bulk_post') }}">
-  <input type="hidden" name="date_iso" value="{{ date_iso }}">
-  <div class="grid">
-    <div><label>Date in sheet</label><input value="{{ date_iso }}" disabled></div>
-    <div><label>Section</label>
-      <select name="section"><option>ANY</option><option>GSU</option><option>ULM</option></select>
+<form method="post" action="{{ url_for('writer_bulk_post') }}" id="bulkForm">
+  <input type="hidden" name="date_iso" value="{{ date_iso or '__TODAY__' }}">
+
+  <div class="grid" style="align-items:end;">
+    <div>
+      <label>Date in sheet</label>
+      <input value="{{ date_iso or '__TODAY__' }}" disabled>
+      <small>If you just created today's column, this will be set automatically.</small>
+    </div>
+    <div>
+      <label>Section</label>
+      <select name="section" id="sectionSel">
+        <option value="ANY">ANY</option>
+        <option value="GSU">GSU</option>
+        <option value="ULM">ULM</option>
+      </select>
+    </div>
+    <div>
+      <label>Quick filter (type to filter names)</label>
+      <input id="filterBox" placeholder="e.g., Brown">
     </div>
   </div>
 
-  <p class="contrast">Click a status to select; click again to **deselect**. If “Excused” is selected, you can optionally type a reason.</p>
+  <details style="margin:.5rem 0;">
+    <summary>Quick actions</summary>
+    <div class="grid" style="margin-top:.5rem;">
+      <button type="button" id="btnSelectAllPresent">Select ALL → Present</button>
+      <button type="button" id="btnSelectAllFTR">Select ALL → FTR</button>
+      <button type="button" id="btnClearAll">Clear ALL</button>
+    </div>
+    <small>Quick actions affect only visible (filtered) rows.</small>
+  </details>
 
-  <table>
-    <thead><tr><th>Name</th><th>MS</th><th>Present</th><th>FTR</th><th>Excused</th><th>Reason (optional)</th></tr></thead>
-    <tbody>
-      {% for c in cadets %}
-      <tr>
-        <td>{{ c.Name }}</td>
-        <td>MS{{ c.MS }}</td>
-        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="Present">Present</button></td>
-        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="FTR">FTR</button></td>
-        <td><button type="button" class="toggle" data-name="{{ c.Name }}" data-val="Excused">Excused</button></td>
-        <td><input name="reason__{{ c.Name }}" placeholder="Optional when Excused"></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  {% if cadets and cadets|length > 0 %}
+  <div class="overflow-auto" style="max-height:65vh;border:1px solid var(--muted-border-color);border-radius:.5rem;">
+    <table>
+      <thead>
+        <tr>
+          <th style="min-width:220px;">Name</th>
+          <th style="min-width:60px;">MS</th>
+          <th style="min-width:110px;">Present</th>
+          <th style="min-width:110px;">FTR</th>
+          <th style="min-width:130px;">Excused</th>
+          <th style="min-width:260px;">Reason (optional, shown only if Excused)</th>
+        </tr>
+      </thead>
+      <tbody id="cadetBody">
+        {% for c in cadets %}
+        {% set nm = c.Name %}
+        <tr data-name="{{ nm|e }}">
+          <td><strong>{{ nm }}</strong></td>
+          <td>MS{{ c.MS or '' }}</td>
+          <td>
+            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="Present">Present</button>
+          </td>
+          <td>
+            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="FTR">FTR</button>
+          </td>
+          <td>
+            <button type="button" class="toggle" data-name="{{ nm|e }}" data-val="Excused">Excused</button>
+          </td>
+          <td>
+            <input name="reason__{{ nm }}" class="reason" placeholder="Optional reason when Excused" style="display:none;">
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 
   <!-- hidden inputs the JS will manage -->
-  <div id="hidden"></div>
+  <div id="hiddenInputs"></div>
 
-  <button type="submit">Write Selections</button>
+  <div style="margin-top:1rem;">
+    <button type="submit">Write Selections</button>
+  </div>
+
+  {% else %}
+    <article class="contrast" style="margin-block:1rem;">
+      <h3 style="margin:0;">No cadets found</h3>
+      <p style="margin:.5rem 0 0;">Sheet 1 didn’t return any rows. Confirm your header detection and name columns.</p>
+    </article>
+  {% endif %}
 </form>
 
 <script>
-  // three-state, mutually exclusive, with deselect on second click
-  const hidden = document.getElementById('hidden');
-  const map = new Map(); // name -> current value or ''
+(function(){
+  const hidden = document.getElementById('hiddenInputs');
+  const map = new Map(); // name -> "Present" | "FTR" | "Excused" | ""
+  const reasonVisibleFor = new Set();
+
+  function findRowButtons(name) {
+    return [...document.querySelectorAll('button.toggle[data-name="'+CSS.escape(name)+'"]')];
+  }
+  function findReasonInput(name) {
+    return document.querySelector('input.reason[name="reason__'+name+'"]');
+  }
+
   function setHidden(name, val) {
-    let id = "status__" + name;
+    const id = "status__" + name;
     let input = document.querySelector('input[name="'+id+'"]');
     if (!input) {
       input = document.createElement('input');
-      input.type = 'hidden'; input.name = id;
+      input.type = 'hidden';
+      input.name = id;
       hidden.appendChild(input);
     }
     input.value = val;
   }
   function clearHidden(name) {
-    let input = document.querySelector('input[name="status__'+name+'"]');
-    if (input) input.remove();
+    const sel = 'input[name="status__'+name+'"]';
+    const el = document.querySelector(sel);
+    if (el) el.remove();
   }
+
+  function updateReasonVisibility(name) {
+    const isExcused = (map.get(name) === "Excused");
+    const input = findReasonInput(name);
+    if (!input) return;
+    input.style.display = isExcused ? '' : 'none';
+    if (!isExcused) input.value = '';
+    if (isExcused) {
+      reasonVisibleFor.add(name);
+    } else {
+      reasonVisibleFor.delete(name);
+    }
+  }
+
   function toggleButton(btn) {
     const name = btn.dataset.name;
     const val  = btn.dataset.val;
-    const rowBtns = [...document.querySelectorAll('button.toggle[data-name="'+name+'"]')];
+    const rowBtns = findRowButtons(name);
     const current = map.get(name) || "";
     if (current === val) {
       // deselect
@@ -64,15 +141,62 @@
       rowBtns.forEach(b => b.classList.remove('contrast'));
       clearHidden(name);
     } else {
-      // select this, clear others
       map.set(name, val);
       rowBtns.forEach(b => b.classList.remove('contrast'));
       btn.classList.add('contrast');
       setHidden(name, val);
     }
+    updateReasonVisibility(name);
   }
+
+  // bind row toggles
   document.querySelectorAll('button.toggle').forEach(btn => {
     btn.addEventListener('click', () => toggleButton(btn));
   });
+
+  // quick filter
+  const filterBox = document.getElementById('filterBox');
+  const tbody = document.getElementById('cadetBody');
+  filterBox?.addEventListener('input', () => {
+    const q = (filterBox.value || "").toLowerCase().trim();
+    [...tbody.querySelectorAll('tr')].forEach(tr => {
+      const nm = (tr.dataset.name || "").toLowerCase();
+      tr.style.display = nm.includes(q) ? "" : "none";
+    });
+  });
+
+  // quick actions (affect only visible rows)
+  function applyToVisible(setTo) {
+    [...tbody.querySelectorAll('tr')].forEach(tr => {
+      if (tr.style.display === "none") return;
+      const name = tr.dataset.name;
+      const buttons = findRowButtons(name);
+      if (setTo === "") {
+        map.set(name, "");
+        buttons.forEach(b => b.classList.remove('contrast'));
+        clearHidden(name);
+      } else {
+        map.set(name, setTo);
+        buttons.forEach(b => {
+          b.classList.toggle('contrast', b.dataset.val === setTo);
+        });
+        setHidden(name, setTo);
+      }
+      updateReasonVisibility(name);
+    });
+  }
+  document.getElementById('btnSelectAllPresent')?.addEventListener('click', () => applyToVisible("Present"));
+  document.getElementById('btnSelectAllFTR')?.addEventListener('click', () => applyToVisible("FTR"));
+  document.getElementById('btnClearAll')?.addEventListener('click', () => applyToVisible(""));
+
+  // form submit guard: if Excused selected but user typed no reason, that's fine (optional)
+  // but we’ll trim whitespace in reasons to keep the sheet tidy.
+  document.getElementById('bulkForm')?.addEventListener('submit', () => {
+    reasonVisibleFor.forEach(name => {
+      const input = findReasonInput(name);
+      if (input) input.value = (input.value || "").trim();
+    });
+  });
+})();
 </script>
 {% endblock %}
