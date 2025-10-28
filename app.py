@@ -1,5 +1,6 @@
 import os, json, logging
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
+from flask_login import login_required
 from datetime import datetime, date
 from utils.gutils import add_date_column_for_sections  # NEW
 from utils.gutils import (
