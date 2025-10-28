@@ -9,6 +9,40 @@ from utils.gutils import (
     find_cadet_availability, update_attendance_cell, get_status_by_date_and_ms,
     load_service_account_from_env
 )
+
+# app.py (top-of-file imports)
+from datetime import date, timedelta, datetime
+from flask import Flask, render_template, request, redirect, url_for, flash
+# safe import: if flask_login isn’t installed, noop the decorator
+try:
+    from flask_login import login_required
+except Exception:
+    def login_required(fn): return fn
+
+from utils.gutils import (
+    normalize_date,
+    add_date_column_for_sections,
+    get_status_by_date_and_ms,
+    load_attendance_dataframe,  # you can point this at whatever you already use
+)
+
+
+# app.py (routes)
+
+@app.route("/writer/create-today", methods=["POST"])
+@login_required
+def writer_create_today():
+    """
+    Creates today's date column in BOTH GSU *and* ULM attendance matrices.
+    Expects an optional 'suffix' form field (e.g., 'PT' or 'LLAB') to append.
+    Redirects back to bulk writer set to the created ISO date.
+    """
+    suffix = (request.form.get("suffix") or "").strip()
+    info = add_date_column_for_sections(suffix)  # {'label','iso'}
+    flash(f"Created date column '{info['label']}' for GSU and ULM.")
+    return redirect(url_for("writer_bulk", date=info["iso"]))
+
+
 # --- Auth imports (guarded so app can boot even if Flask-Login is missing) ---
 try:
     from flask_login import (
