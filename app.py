@@ -82,7 +82,7 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 
 # app.py (routes)
-
+'''
 @app.route("/writer/create-today", methods=["POST"])
 @login_required
 def writer_create_today():
@@ -95,7 +95,7 @@ def writer_create_today():
     info = add_date_column_for_sections(suffix)  # {'label','iso'}
     flash(f"Created date column '{info['label']}' for GSU and ULM.")
     return redirect(url_for("writer_bulk", date=info["iso"]))
-
+'''
 def require_user():
     if not session.get("user_ok"):
         return redirect(url_for("login", next=request.path))
@@ -344,13 +344,20 @@ def writer_post():
         flash(f"Error: {e}")
         return redirect(url_for("writer_form"))
 # --- Create today's date column (admin) ---
+
+
+# app.py (keep this one, delete any duplicates)
+from flask import Flask, render_template, request, redirect, url_for, flash
+# ... your other imports ...
+from utils.gutils import add_date_column_for_sections
+
 @app.post("/writer/create-today")
-@login_required
 def writer_create_today():
-    suffix = (request.form.get("suffix") or "").strip()
-    info = add_date_column_for_sections(suffix)
-    flash(f"Created '{info['label']}' for GSU and ULM.")
-    return redirect(url_for("writer_bulk", date=info["iso"]))
+    suffix = request.form.get("suffix", "").strip()
+    info = add_date_column_for_sections(suffix)  # writes date to BOTH GSU + ULM
+    flash(f"Created/verified date column '{info['label']}' ({info['iso']}) for GSU & ULM.", "success")
+    return redirect(url_for("writer"))  # back to the writer page
+
 
 # If you don’t have writer_bulk yet, keep your existing route name/signature.
 # This just ensures the button returns you to bulk editor focused on the new date.
