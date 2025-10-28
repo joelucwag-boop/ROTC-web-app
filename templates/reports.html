@@ -3,16 +3,13 @@
 <h2>Reports</h2>
 
 <form method="get" action="{{ url_for('reports_daily') }}" class="card">
-  <label for="date">Daily date</label>
-  <input id="date" name="date" placeholder="YYYY-MM-DD or MM-DD-YYYY">
-  <small>Examples: 2025-10-17 or 10-17-2025</small>
-  <div style="margin-top:0.75rem">
-    <button type="submit">Show Daily</button>
-  </div>
+  <label for="date">Daily date (YYYY-MM-DD)</label>
+  <input id="date" name="date" placeholder="YYYY-MM-DD" value="{{ request.args.get('date','') }}">
+  <small>Pick a date that actually exists in the header row of the matrices.</small>
+  <button type="submit" style="margin-top:1rem;">Show Daily</button>
 </form>
 
-<div style="margin-top:1.25rem">
-  <a class="button" href="{{ url_for('weekly_report') }}">Open Weekly Report</a>
+<div class="card" style="margin-top:1rem;">
+  <a class="button" href="{{ url_for('reports_weekly') }}">Open Weekly Report</a>
 </div>
 {% endblock %}
-
