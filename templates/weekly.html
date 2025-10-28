@@ -2,46 +2,33 @@
 {% block content %}
 <h2>Weekly Report</h2>
 
-{% if dates and rows %}
-  {% for iso in dates %}
-    {% set day = rows.get(iso, {}) %}
-    <section style="margin-block:1.25rem;">
-      <h3 style="margin:0 0 .25rem 0;">{{ iso }}</h3>
+{% for it in items %}
+  <div class="card" style="margin-bottom:1rem">
+    <h3>{{ it.date }}</h3>
+    {% if it.message %}
+      <p class="muted">{{ it.message }}</p>
+    {% endif %}
+    {% if it.rows %}
+      {% for ms in ['1','2','3','4','5'] %}
+        {% set group = it.rows.get(ms, []) %}
+        <details style="margin-bottom:0.5rem">
+          <summary><strong>MS{{ ms }}</strong> — {{ group|length }} entries</summary>
+          {% if group %}
+            <ul>
+              {% for r in group %}
+                <li>{{ r.name }} — {{ r.status or '—' }}</li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p>No rows.</p>
+          {% endif %}
+        </details>
+      {% endfor %}
+    {% else %}
+      <p>No data for this day.</p>
+    {% endif %}
+  </div>
+{% endfor %}
+{% endblock %}
 
-      {% if day and day.items %}
-        <div class="grid">
-          {% for bucket, people in day.items() %}
-            <article class="contrast">
-              <h4 style="margin:.25rem 0;">{{ bucket }}</h4>
-              {% if people %}
-                <ul style="margin:.25rem 0 0 1rem;">
-                  {% for p in people %}
-                    <li>
-                      {{ (p.name if p is mapping else "") 
-                         or (p.Name if p is mapping else "")
-                         or p }}
-                    </li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <p style="margin:.25rem 0 0;">None</p>
-              {% endif %}
-            </article>
-          {% endfor %}
-        </div>
-      {% else %}
-        <article class="contrast">
-          <p style="margin:.25rem 0;">No data for this day.</p>
-        </article>
-      {% endif %}
-    </section>
-  {% endfor %}
-{% else %}
-  <article class="contrast" style="margin-block:1rem;">
-    <h3 style="margin:0;">No recent dates found</h3>
-    <p style="margin:.5rem 0 0;">Once new attendance columns appear, this page will populate.</p>
-  </article>
-{% endif %}
-
-<p><a href="{{ url_for('reports_daily') }}">Go to Daily</a></p>
 {% endblock %}
