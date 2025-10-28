@@ -1,6 +1,7 @@
 import os, json, logging
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
 from datetime import datetime, date
+from utils.gutils import add_date_column_for_sections  # NEW
 from utils.gutils import (
     get_attendance_dataframe, detect_header_row, list_attendance_dates,
     build_present_rates_by_ms, get_cadet_directory_rows, get_availability_df,
@@ -57,6 +58,31 @@ def admin_login_post():
     flash("Bad admin password")
     return redirect(url_for("admin_login"))
 
+from datetime import datetime
+
+def _parse_any_date_to_iso(s: str | None) -> str | None:
+    if not s:
+        return None
+    s = s.strip()
+    # try strict yyyy-mm-dd first
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        pass
+    # try dd-mm-yyyy
+    try:
+        return datetime.strptime(s, "%Y-%d-%m").date().isoformat()
+    except Exception:
+        pass
+    # try mm-dd-yyyy
+    try:
+        return datetime.strptime(s, "%m-%d-%Y").date().isoformat()
+    except Exception:
+        pass
+    # give up (let the view show a friendly error)
+    return None
+
+
 @app.get("/logout")
 def logout():
     session.clear()
@@ -103,20 +129,22 @@ def reports_menu():
 def _daily_compat():
     return reports_daily()
 
-@app.get("/reports/daily", endpoint="reports_daily")
+@app.get("/reports/daily")
+@login_required
 def reports_daily():
-    if not session.get("user_ok"): 
-        return require_user()
-    iso = request.args.get("date", "").strip()
+    raw = request.args.get("date", "")
+    iso = _parse_any_date_to_iso(raw)
+    if raw and not iso:
+        return render_template("error.html", message=f"Could not parse date '{raw}'. Try YYYY-MM-DD."), 400
     try:
-        df = get_attendance_dataframe()
+        # your existing dataframe loader
+        df = load_attendance_dataframe()
         rows = get_status_by_date_and_ms(df, iso) if iso else {}
-        if rows is None:
-            rows = {}
-        return render_template("daily.html", rows=rows, iso=iso)
+        return render_template("report_daily.html", iso=iso, rows=rows)
     except Exception as e:
-        log.exception("daily report error")
-        return render_template("error.html", msg=str(e)), 500
+        current_app.logger.error("daily report error", exc_info=True)
+        return render_template("error.html", message=str(e)), 500
+
 
 @app.get("/reports/weekly")
 def weekly_report():
@@ -138,7 +166,13 @@ def weekly_report():
         log.exception("weekly report error")
         return render_template("error.html", msg=str(e)), 500
 
-
+def _safe_has_date(header, iso):
+    try:
+        _ = _find_header_col_index_by_iso(header, iso)
+        return True
+    except ValueError:
+        return False
+        
 # ---- Directory (password protected) ----
 @app.get("/directory")
 def directory():
@@ -233,16 +267,17 @@ def writer_post():
         return redirect(url_for("writer_form"))
 # --- Create today's date column (admin) ---
 @app.post("/writer/create-today")
+@login_required
 def writer_create_today():
-    if not session.get("admin_ok"): return require_admin()
-    suffix = request.form.get("suffix", "PT").strip() or "PT"
+    suffix = request.form.get("suffix", "— PT").strip()
     try:
-        info = add_date_column_for_sections(suffix)  # returns {'label','iso'}
-        flash(f"Added header for today: {info['label']}")
-        return redirect(url_for("writer_bulk", date=info["iso"]))
+        info = add_date_column_for_sections(suffix)  # {'label','iso'}
+        flash(f"Created/verified {info['label']} in both GSU & ULM.", "success")
+        return redirect(url_for("writer"))
     except Exception as e:
-        log.exception("create-today error")
-        return render_template("error.html", msg=str(e)), 500
+        current_app.logger.error("create-today error", exc_info=True)
+        return render_template("error.html", message=str(e)), 500
+
 
 # --- Bulk writer form ---
 @app.get("/writer/bulk")
