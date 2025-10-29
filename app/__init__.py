@@ -32,3 +32,10 @@ def create_app():
         return {"status": "ok", "cached": True}
 
     return app
+
+# ---- optional fallback so 'gunicorn app:app' also works ----
+try:
+    app  # if already defined elsewhere, don't redefine
+except NameError:
+    app = create_app()
+
