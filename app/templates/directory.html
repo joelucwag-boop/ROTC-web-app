@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Cadet Directory</h2>
+<table>
+  <tr><th>Name</th><th>MS</th><th>Status</th></tr>
+  {% for name, ms, category in cadets %}
+  <tr>
+    <td>{{ name }}</td>
+    <td>{{ ms }}</td>
+    <td>{{ category }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
