@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Daily Report Summary</h2>
+<table>
+  <tr><th>MS Level</th><th>Present</th><th>FTR</th><th>Excused</th><th>Total</th></tr>
+  {% for row in table %}
+  <tr>
+    <td>{{ row['MS Level'] }}</td>
+    <td>{{ row['Present'] }}</td>
+    <td>{{ row['FTR'] }}</td>
+    <td>{{ row['Excused'] }}</td>
+    <td>{{ row['Total'] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<h3>Overall Totals</h3>
+<p>Present : {{ overall['Present'] }} | FTR : {{ overall['FTR'] }} | Excused : {{ overall['Excused'] }}</p>
+{% endblock %}
