@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Attendance Writer (Protected)</h2>
+<form method="post">
+  <label>School:</label>
+  <select name="school">
+    <option value="GSU">GSU</option>
+    <option value="ULM">ULM</option>
+    <option value="Both">Both</option>
+  </select>
+  <label>Event:</label>
+  <input type="text" name="event" placeholder="PT / Lab / Other">
+  <label>Status:</label>
+  <select name="status">
+    <option value="Present">Present</option>
+    <option value="FTR">FTR</option>
+    <option value="Excused">Excused</option>
+  </select>
+  <label>Date:</label>
+  <input type="date" name="date" value="{{ '%Y-%m-%d'|strftime }}">
+  <button type="submit">Submit</button>
+</form>
+{% if message %}
+<p><strong>{{ message }}</strong></p>
+{% endif %}
+{% endblock %}
