@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>OML Ranking – Attendance Based</h2>
+<table>
+  <tr><th>MS</th><th>Score</th><th>Present</th><th>FTR</th></tr>
+  {% for cadet in leaderboard %}
+  <tr>
+    <td>{{ cadet.MS }}</td>
+    <td>{{ cadet.Score }}</td>
+    <td>{{ cadet.Present }}</td>
+    <td>{{ cadet.FTR }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
