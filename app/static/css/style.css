@@ -1,0 +1,11 @@
+body { font-family: Arial, sans-serif; background:#fafafa; margin:0; }
+header { background:#20232a; color:#fff; padding:1rem; }
+header h1 { margin:0 0 .5rem 0; }
+nav a { color:#61dafb; margin-right:1rem; text-decoration:none; }
+nav a:hover { text-decoration:underline; }
+main { padding:1rem 2rem; }
+footer { text-align:center; font-size:.9rem; color:#666; margin-top:2rem; }
+table { border-collapse:collapse; width:100%; background:#fff; margin-top:1rem; }
+th, td { border:1px solid #ccc; padding:.5rem .75rem; text-align:left; }
+th { background:#eee; }
+.slider-container { margin-top:1rem; }
