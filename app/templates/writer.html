@@ -17,7 +17,7 @@
     <option value="Excused">Excused</option>
   </select>
   <label>Date:</label>
-  <input type="date" name="date" value="{{ '%Y-%m-%d'|strftime }}">
+  <input type="date" name="date" value="{{ date_default }}">
   <button type="submit">Submit</button>
 </form>
 {% if message %}
