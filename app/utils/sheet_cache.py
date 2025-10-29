@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 import pytz
 import logging
 from app.integrations.google_sheets_attendance import daily_report
+from pathlib import Path
+CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Local import inside function to avoid circular dependency
 # google_sheets_attendance.py must remain untouched.
 
