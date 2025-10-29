@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Battalion Waterfall Matrix</h2>
+<table>
+  <tr><th>Position</th><th>Name</th></tr>
+  {% for row in matrix %}
+  <tr><td>{{ row.position }}</td><td>{{ row.name }}</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
