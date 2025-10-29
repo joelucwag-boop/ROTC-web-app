@@ -6,7 +6,7 @@ import pickle
 from datetime import datetime, timedelta
 import pytz
 import logging
-
+from app.integrations.google_sheets_attendance import daily_report
 # Local import inside function to avoid circular dependency
 # google_sheets_attendance.py must remain untouched.
 
