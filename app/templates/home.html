@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Attendance Summary – {{ today }}</h2>
+<canvas id="attendanceChart" width="800" height="400"></canvas>
+<div class="slider-container">
+  <label for="smoothness">Average Smoothing:</label>
+  <input type="range" id="smoothness" min="1" max="10" value="3">
+</div>
+<script>
+const labels = {{ labels|tojson }};
+const presents = {{ presents|tojson }};
+const ftrs = {{ ftrs|tojson }};
+const excused = {{ excused|tojson }};
+</script>
+<script src="{{ url_for('static', filename='js/chart_controls.js') }}"></script>
+{% endblock %}
