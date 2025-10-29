@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Availability Checker</h2>
+<form method="post">
+  <label>Select Day:</label>
+  <input type="text" name="day" placeholder="e.g. Monday or Mon">
+  <button type="submit">Search</button>
+</form>
+{% if results %}
+  <h3>Results for {{ selected_day|capitalize }}</h3>
+  <table>
+    <tr><th>Name</th><th>Available</th><th>Time Window</th></tr>
+    {% for r in results %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td>{{ "✅" if r.available else "❌" }}</td>
+      <td>{{ r.time }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+{% endif %}
+{% endblock %}
