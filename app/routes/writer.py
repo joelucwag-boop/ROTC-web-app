@@ -1,4 +1,5 @@
 from flask import Blueprint, render_template, request, current_app
+from datetime import date
 
 bp = Blueprint("writer", __name__, url_prefix="/writer")
 
@@ -6,17 +7,22 @@ bp = Blueprint("writer", __name__, url_prefix="/writer")
 def writer():
     app = current_app
     message = ""
+    date_default = date.today().isoformat()  # 'YYYY-MM-DD'
+
     if request.method == "POST":
         school = request.form.get("school")
         event = request.form.get("event")
         status = request.form.get("status")
-        date = request.form.get("date")
-        app.logger.debug("Writer input: %s %s %s %s", school, event, status, date)
+        sel_date = request.form.get("date") or date_default
 
-        if not app.config["ENABLE_WRITES"]:
-            message = "⚠️ Write mode disabled. ENABLE_WRITES=False."
-            app.logger.info("Write attempted but disabled.")
+        app.logger.debug("Writer input: school=%s event=%s status=%s date=%s",
+                         school, event, status, sel_date)
+
+        if not app.config.get("ENABLE_WRITES", False):
+            message = "⚠️ Write mode disabled. Set ENABLE_WRITES=True to enable."
         else:
-            # placeholder: write logic would go here
-            message = "✅ Would have written attendance (disabled in current mode)."
-    return render_template("writer.html", message=message)
+            # TODO: call your safe write function here
+            message = "✅ Would have written attendance (disabled)."
+
+    return render_template("writer.html", message=message, date_default=date_default)
+
