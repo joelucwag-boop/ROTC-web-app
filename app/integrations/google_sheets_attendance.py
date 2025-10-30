@@ -36,7 +36,7 @@ import pandas as pd
 
 # === CONFIG ===
 # Path to your downloaded service-account JSON key file
-KEY_FILE = GOOGLE_SERVICE_ACCOUNT_JSON
+
 
 
 @dataclass
