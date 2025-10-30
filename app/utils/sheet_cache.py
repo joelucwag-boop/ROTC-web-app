@@ -8,6 +8,9 @@ import pytz
 import logging
 from app.integrations.google_sheets_attendance import daily_report
 from pathlib import Path
+log = logging.getLogger(__name__)
+log.info("INTEGRATIONS CONTENTS: %s",
+         os.listdir(os.path.join(os.path.dirname(__file__), "..", "integrations")))
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Local import inside function to avoid circular dependency
