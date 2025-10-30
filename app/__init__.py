@@ -1,4 +1,5 @@
 import os
+os.makedirs(os.path.join(os.path.dirname(__file__), "cache"), exist_ok=True)
 from flask import Flask
 from .config import Config
 from .utils.logger import init_logging
