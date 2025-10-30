@@ -36,7 +36,7 @@ import pandas as pd
 
 # === CONFIG ===
 # Path to your downloaded service-account JSON key file
-KEY_FILE = r"c:\Users\joelu\OneDrive\Pictures\Desktop\sharp-cosmos-472916-i0-ea951b47926f.json"
+KEY_FILE = GOOGLE_SERVICE_ACCOUNT_JSON
 
 
 @dataclass
@@ -46,17 +46,17 @@ class SheetConfig:
     key_file: str = KEY_FILE
 
 
-def _client_from_key(key_file: str) -> gspread.Client:
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
-    ]
-    creds = Credentials.from_service_account_file(key_file, scopes=scopes)
-    return gspread.authorize(creds)
+def get_client():
+    creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not creds_json:
+        raise RuntimeError("Missing GOOGLE_CREDENTIALS_JSON env var")
+    info = json.loads(creds_json)
+    credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(credentials)
 
 
 def _open_ws(cfg: SheetConfig) -> gspread.Worksheet:
-    gc = _client_from_key(cfg.key_file)
+    gc = get_client()
     sh = gc.open_by_key(cfg.sheet_id)
     return sh.worksheet(cfg.tab_name)
 
