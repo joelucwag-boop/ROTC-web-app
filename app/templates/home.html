@@ -1,11 +1,62 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Attendance Summary – {{ today }}</h2>
-<canvas id="attendanceChart" width="800" height="400"></canvas>
-<div class="slider-container">
-  <label for="smoothness">Average Smoothing:</label>
-  <input type="range" id="smoothness" min="1" max="10" value="3">
-</div>
+<section class="dashboard-intro">
+  <h2>Daily Attendance Snapshot</h2>
+  {% if generated_at %}
+  <p class="muted">Cache generated {{ generated_at }}</p>
+  {% endif %}
+</section>
+
+{% if latest_event %}
+<section class="latest-event">
+  <h3>{{ latest_event.header }}</h3>
+  {% if latest_event.event %}
+  <p class="muted">Event: {{ latest_event.event }}</p>
+  {% endif %}
+  <table class="metrics">
+    <thead>
+      <tr>
+        <th>Group</th>
+        <th>Present</th>
+        <th>FTR</th>
+        <th>Excused</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ms in ms_levels %}
+      <tr>
+        <td>MS{{ ms }}</td>
+        <td>{{ latest_event.per_ms.get(ms, {}).get('Present', 0) }}</td>
+        <td>{{ latest_event.per_ms.get(ms, {}).get('FTR', 0) }}</td>
+        <td>{{ latest_event.per_ms.get(ms, {}).get('Excused', 0) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <th>Overall</th>
+        <th>{{ latest_event.counts.Present }}</th>
+        <th>{{ latest_event.counts.FTR }}</th>
+        <th>{{ latest_event.counts.Excused }}</th>
+      </tr>
+    </tfoot>
+  </table>
+</section>
+{% else %}
+<p class="muted">Attendance data has not been cached yet. Check your spreadsheet configuration.</p>
+{% endif %}
+
+<section class="chart-section">
+  <div class="chart-header">
+    <h3>Trendline (Last {{ labels|length }} Events)</h3>
+    <div class="slider-container">
+      <label for="smoothness">Average Smoothing:</label>
+      <input type="range" id="smoothness" min="1" max="10" value="3">
+    </div>
+  </div>
+  <canvas id="attendanceChart" width="800" height="400"></canvas>
+</section>
+
 <script>
 const labels = {{ labels|tojson }};
 const presents = {{ presents|tojson }};
