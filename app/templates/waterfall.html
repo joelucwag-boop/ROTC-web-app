@@ -1,10 +1,27 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Battalion Waterfall Matrix</h2>
-<table>
-  <tr><th>Position</th><th>Name</th></tr>
-  {% for row in matrix %}
-  <tr><td>{{ row.position }}</td><td>{{ row.name }}</td></tr>
-  {% endfor %}
+<section class="waterfall-header">
+  <h2>Battalion Waterfall Matrix</h2>
+  <p class="muted">Values pulled directly from the UMR tab. Cell references are shown for quick troubleshooting.</p>
+</section>
+
+<table class="waterfall-table">
+  <thead>
+    <tr><th>Position</th><th>Name</th><th>Title</th><th>Cells</th></tr>
+  </thead>
+  <tbody>
+    {% for row in matrix %}
+    <tr>
+      <td>{{ row.position or '—' }}</td>
+      <td>{{ row.name or '—' }}</td>
+      <td>{{ row.title or '—' }}</td>
+      <td>
+        <code>P:{{ row.cells.position }}</code>
+        {% if row.cells.name %}<code>N:{{ row.cells.name }}</code>{% endif %}
+        {% if row.cells.title %}<code>T:{{ row.cells.title }}</code>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
 {% endblock %}
