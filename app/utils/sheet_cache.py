@@ -14,6 +14,11 @@ from pathlib import Path
 # app/utils/sheet_cache.py
 from pathlib import Path
 import logging
+import sys, os, logging, pathlib
+log = logging.getLogger(__name__)
+log.info("SHEET_CACHE MARKER v7 | FILE=%s", __file__)
+log.info("PYTHONPATH[0]=%s", sys.path[0])
+log.info("INTEGRATIONS LIST=%s", os.listdir(os.path.join(os.path.dirname(__file__), "..", "integrations")))
 
 log = logging.getLogger(__name__)
 
