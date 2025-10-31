@@ -9,15 +9,18 @@
 <body>
   <header>
     <h1>GSU Attendance Dashboard</h1>
-    <nav>
-      <a href="{{ url_for('home.index') }}">Dashboard</a>
-      <a href="{{ url_for('directory.directory') }}">Directory</a>
-      <a href="{{ url_for('reports.reports') }}">Reports</a>
-      <a href="{{ url_for('availability.availability') }}">Availability</a>
-      <a href="{{ url_for('oml.oml') }}">OML</a>
-      <a href="{{ url_for('writer.writer') }}">Writer</a>
-      <a href="{{ url_for('waterfall.waterfall') }}">Waterfall</a>
-    </nav>
+<!-- app/templates/base.html (example) -->
+      <nav>
+        <a href="{{ url_for('home.index') }}">Home</a>
+        <a href="{{ url_for('writer.index') }}">Writer</a>
+        <a href="{{ url_for('reports.index') }}">Reports</a>
+        <a href="{{ url_for('directory.index') }}">Directory</a>
+        <a href="{{ url_for('availability.index') }}">Availability</a>
+        <a href="{{ url_for('oml.index') }}">OML</a>
+        <a href="{{ url_for('waterfall.index') }}">Waterfall</a>
+        <a href="{{ url_for('admin.index') }}">Admin</a>
+      </nav>
+
   </header>
   <main>
     {% block content %}{% endblock %}
