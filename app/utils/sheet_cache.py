@@ -11,14 +11,27 @@ from pathlib import Path
 
 # app/utils/sheet_cache.py
 
+# app/utils/sheet_cache.py
+from pathlib import Path
+import logging
+
+log = logging.getLogger(__name__)
+
+CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_FILE = CACHE_DIR / "attendance.pkl"
+
 def _load_from_sheet(app):
-    # lazy import prevents circulars and works regardless of PYTHONPATH
+    # <-- this is the ONLY place we import the integration
     try:
         from ..integrations.google_sheets_attendance import daily_report
+        log.info("Loaded daily_report via relative import.")
     except ImportError:
-        # fallback if the module is loaded without a package context
         from app.integrations.google_sheets_attendance import daily_report
+        log.info("Loaded daily_report via absolute import fallback.")
     return daily_report(app)
+
+
 
 log = logging.getLogger(__name__)
 log.info("INTEGRATIONS CONTENTS: %s",
@@ -64,20 +77,7 @@ def _should_refresh(app, cache_name):
     return mtime < last_refresh
 
 
-def _load_from_sheet(app):
-    """Pull data directly from Google Sheets."""
-    from google_sheets_attendance import daily_report  # only import here
 
-    try:
-        rep = daily_report(
-            app.config["SPREADSHEET_ID"],
-            app.config["WORKSHEET_NAME"],
-            datetime.now().strftime("%Y-%m-%d"),
-        )
-        return rep
-    except Exception as e:
-        app.logger.error("Failed to load attendance sheet: %s", e)
-        return {}
 
 
 def refresh_cache(app, cache_name="attendance"):
