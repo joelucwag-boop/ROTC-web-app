@@ -6,8 +6,20 @@ import pickle
 from datetime import datetime, timedelta
 import pytz
 import logging
-from app.integrations.google_sheets_attendance import daily_report
+
 from pathlib import Path
+
+# app/utils/sheet_cache.py
+
+def _load_from_sheet(app):
+    # lazy import prevents circulars and works regardless of PYTHONPATH
+    try:
+        from ..integrations.google_sheets_attendance import daily_report
+    except ImportError:
+        # fallback if the module is loaded without a package context
+        from app.integrations.google_sheets_attendance import daily_report
+    return daily_report(app)
+
 log = logging.getLogger(__name__)
 log.info("INTEGRATIONS CONTENTS: %s",
          os.listdir(os.path.join(os.path.dirname(__file__), "..", "integrations")))
