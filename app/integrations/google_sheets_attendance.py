@@ -1,50 +1,67 @@
 #!/usr/bin/env python3
-"""
-Google Sheets Attendance Helper (Render-safe)
+"""High level helpers for interacting with the attendance workbook.
 
-This version reads the Google service account credentials from the environment
-variable GOOGLE_SERVICE_ACCOUNT_JSON instead of a local JSON file path.
-All other behavior is identical to the original.
+This module is intentionally verbose – each function performs a single
+responsibility so that troubleshooting a bad dataset only requires
+touching one small unit at a time.  The functions here are used both by
+the caching layer and directly by the writer blueprint.
 """
 
 from __future__ import annotations
+
+import io
+import json
 import os
 import re
 import sys
-import json
 from dataclasses import dataclass
-from datetime import datetime, date as _date
-from typing import Dict, List, Optional, Tuple
+from datetime import date as _date
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import gspread
-from google.oauth2.service_account import Credentials
 import pandas as pd
+import requests
+from gspread.cell import Cell
+from gspread.utils import rowcol_to_a1
+from google.oauth2.service_account import Credentials
 
-# === CONFIG ===
-# Load credentials JSON from environment variable
+STATUS_KEYS = ("Present", "FTR", "Excused")
+
+DAY_ALIASES = {
+    "monday": {"monday", "mon", "mo"},
+    "tuesday": {"tuesday", "tue", "tues", "tu"},
+    "wednesday": {"wednesday", "wed", "we"},
+    "thursday": {"thursday", "thu", "thur", "thurs", "th"},
+    "friday": {"friday", "fri", "fr"},
+    "saturday": {"saturday", "sat", "sa"},
+    "sunday": {"sunday", "sun", "su"},
+}
+
+
+# ---------------------------------------------------------------------------
+# Google client utilities
+# ---------------------------------------------------------------------------
+
+
 ENV_KEY = "GOOGLE_SERVICE_ACCOUNT_JSON"
 
+
 def _client_from_env() -> gspread.Client:
-    """
-    Build an authenticated gspread client using the JSON key stored in
-    the environment variable GOOGLE_SERVICE_ACCOUNT_JSON.
-    Falls back to local KEY_FILE if env var missing.
-    """
     scopes = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
     ]
 
     creds_json = os.getenv(ENV_KEY)
-    if creds_json:
-        info = json.loads(creds_json)
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-    else:
+    if not creds_json:
         raise RuntimeError(
             f"Environment variable {ENV_KEY} not found. "
-            "Set it in Render with the full JSON contents of your service key."
+            "Set it to the full JSON payload of your service account key."
         )
 
+    info = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
     return gspread.authorize(creds)
 
 
@@ -60,21 +77,46 @@ def _open_ws(cfg: SheetConfig) -> gspread.Worksheet:
     return sh.worksheet(cfg.tab_name)
 
 
-def _sheet_to_df(ws: gspread.Worksheet) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# DataFrame helpers (ported from the original scripts)
+# ---------------------------------------------------------------------------
+
+
+def _detect_header_row(rows: Iterable[Iterable[str]], max_scan: int = 10) -> int:
+    def norm(s):
+        return re.sub(r"[^a-z0-9]+", "", (s or "").strip().lower())
+
+    for i in range(min(max_scan, len(rows))):
+        r = list(rows[i])
+        if not r:
+            continue
+        norms = [norm(c) for c in r]
+        has_nameish = any(k in norms for k in ["namefirst", "firstname", "first", "namelast", "lastname", "last"])
+        has_msish = any(k in norms for k in ["mslevel", "ms", "mslvl", "msyear", "msclass", "mscohort"])
+        nonempty = sum(1 for c in r if (c or "").strip() != "")
+        if (has_nameish or has_msish) and nonempty >= 3:
+            return i
+    return 0
+
+
+def _sheet_to_df(ws: gspread.Worksheet, return_meta: bool = False):
     rows = ws.get_all_values()
     if not rows:
         raise ValueError("Worksheet appears to be empty.")
 
     hdr_idx = _detect_header_row(rows, max_scan=10)
     header = rows[hdr_idx]
-    data = rows[hdr_idx + 1:]
+    data = rows[hdr_idx + 1 :]
 
     last_nonempty = max((i for i, h in enumerate(header) if (h or "").strip() != ""), default=-1)
     if last_nonempty >= 0:
-        header = header[:last_nonempty + 1]
-        data = [r[:last_nonempty + 1] for r in data]
+        header = header[: last_nonempty + 1]
+        data = [r[: last_nonempty + 1] for r in data]
 
-    return pd.DataFrame(data, columns=header)
+    df = pd.DataFrame(data, columns=header)
+    if return_meta:
+        return df, hdr_idx, last_nonempty + 1
+    return df
 
 
 def _normalize_name(first: str, last: str) -> str:
@@ -84,8 +126,17 @@ def _normalize_name(first: str, last: str) -> str:
 def _extract_date_str(text: str) -> Optional[str]:
     if not text:
         return None
-    m = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', text)
+    m = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", text)
     return m.group(1) if m else None
+
+
+def _event_from_header(header: str) -> str:
+    if not header:
+        return ""
+    m = re.search(r"\d{1,2}/\d{1,2}/\d{4}\s*([+\-–—:]\s*(.+))?$", header.strip())
+    if m and m.group(2):
+        return m.group(2).strip()
+    return ""
 
 
 def _target_date_formats(target: str) -> List[str]:
@@ -142,30 +193,15 @@ def _classify_status(cell_value: str) -> Optional[str]:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r'[^a-z0-9]+', '', (s or '').strip().lower())
+    return re.sub(r"[^a-z0-9]+", "", (s or "").strip().lower())
 
 
-def _detect_header_row(rows, max_scan=10) -> int:
-    def norm(s):
-        return re.sub(r'[^a-z0-9]+', '', (s or '').strip().lower())
-    for i in range(min(max_scan, len(rows))):
-        r = rows[i]
-        if not r:
-            continue
-        norms = [norm(c) for c in r]
-        has_nameish = any(k in norms for k in ["namefirst","firstname","first","namelast","lastname","last"])
-        has_msish   = any(k in norms for k in ["mslevel","ms","mslvl","msyear","msclass","mscohort"])
-        nonempty = sum(1 for c in r if (c or "").strip() != "")
-        if (has_nameish or has_msish) and nonempty >= 3:
-            return i
-    return 0
-
-
-def _find_col(df: pd.DataFrame, wanted_keys: list[str]) -> Optional[str]:
+def _find_col(df: pd.DataFrame, wanted_keys: List[str]) -> Optional[str]:
     headers = list(df.columns)
     norm_map = {col: _norm(col) for col in headers}
-    wanted_norm = {w for w in wanted_keys if not w.startswith('re:')}
-    wanted_regex = [re.compile(w[3:], re.I) for w in wanted_keys if w.startswith('re:')]
+    wanted_norm = {w for w in wanted_keys if not w.startswith("re:")}
+    wanted_regex = [re.compile(w[3:], re.I) for w in wanted_keys if w.startswith("re:")]
+
     for col, nm in norm_map.items():
         if nm in wanted_norm:
             return col
@@ -181,10 +217,10 @@ def _guess_ms_col(df: pd.DataFrame) -> Optional[str]:
     for i, col in enumerate(headers):
         s = df.iloc[:, i]
         vals = s.astype(str).str.strip().str.lower()
-        sample = vals[vals != ''].head(30)
+        sample = vals[vals != ""].head(30)
         if sample.empty:
             continue
-        ok = sample.apply(lambda v: v in {'1','2','3','4','5'} or re.fullmatch(r'ms\s*\d', v) is not None).mean()
+        ok = sample.apply(lambda v: v in {"1", "2", "3", "4", "5"} or re.fullmatch(r"ms\s*\d", v) is not None).mean()
         if ok >= 0.7:
             return col
     return None
@@ -197,25 +233,571 @@ def _get_series(df: pd.DataFrame, colname: str) -> pd.Series:
     return obj
 
 
-# ---------- Core functions ----------
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "cadet"
+
+
+def _iso_from_mdyyyy(mdyyyy: str) -> str:
+    m, d, y = (int(x) for x in mdyyyy.split("/"))
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
+def _mdyyyy_from_iso(iso_date: str) -> str:
+    y, m, d = (int(x) for x in iso_date.split("-"))
+    return f"{m}/{d}/{y}"
+
+
+def _program_column(df: pd.DataFrame, hint: str = "") -> Optional[str]:
+    preferred = []
+    if hint:
+        preferred.append(_norm(hint))
+    preferred.extend(["school", "campus", "program", "university", "college", "institution"])
+
+    norm_map = {col: _norm(col) for col in df.columns}
+    for want in preferred:
+        for col, norm_val in norm_map.items():
+            if norm_val == want:
+                return col
+    return None
+
+
+def _clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _bool_from_response(text: str) -> Optional[bool]:
+    value = (text or "").strip().lower()
+    if not value:
+        return None
+    positives = ["yes", "available", "open", "present", "can", "y"]
+    negatives = ["no", "not", "unavailable", "cannot", "can't", "n"]
+    if any(p in value for p in positives):
+        return True
+    if any(n in value for n in negatives):
+        return False
+    return None
+
+
+def _tokenise(text: str) -> List[str]:
+    cleaned = re.sub(r"[^a-z0-9:]+", " ", (text or "").lower())
+    parts = [p for p in cleaned.split() if p]
+    extra = []
+    for part in parts:
+        if "-" in part:
+            extra.extend(part.split("-"))
+        if ":" in part:
+            extra.extend(part.split(":"))
+    return list({*parts, *extra})
+
+
+# ---------------------------------------------------------------------------
+# Attendance cache builder
+# ---------------------------------------------------------------------------
+
+
+def build_attendance_cache(sheet_id: str, tab_name: str, program_hint: str = "") -> Dict[str, Any]:
+    ws = _open_ws(SheetConfig(sheet_id, tab_name))
+    df, header_idx, last_col = _sheet_to_df(ws, return_meta=True)
+
+    first_col = _find_col(
+        df,
+        [
+            "namefirst",
+            "firstname",
+            "first",
+            "fname",
+            "givenname",
+            "re:^name.*first$",
+            "re:^first\\b",
+        ],
+    )
+    last_name_col = _find_col(
+        df,
+        [
+            "namelast",
+            "lastname",
+            "last",
+            "lname",
+            "surname",
+            "familyname",
+            "re:^name.*last$",
+            "re:^last\\b",
+        ],
+    )
+    ms_col = _find_col(
+        df,
+        ["mslevel", "ms", "mslvl", "msyear", "msclass", "mscohort", "re:^ms\\s*level$", "re:^ms\\b"],
+    ) or _guess_ms_col(df)
+
+    if not (first_col and last_name_col and ms_col):
+        raise ValueError("Could not detect first/last/MS columns in attendance sheet.")
+
+    program_col = _program_column(df, program_hint)
+
+    date_columns: List[Dict[str, Any]] = []
+    for idx, col in enumerate(df.columns):
+        md = _extract_date_str(col)
+        if not md:
+            continue
+        try:
+            iso = _iso_from_mdyyyy(md)
+        except Exception:
+            continue
+        date_columns.append(
+            {
+                "header": col,
+                "iso": iso,
+                "event": _event_from_header(col),
+                "column_index": idx + 1,
+            }
+        )
+
+    date_columns.sort(key=lambda c: c["iso"])
+
+    ms_series = (
+        _get_series(df, ms_col)
+        .astype(str)
+        .str.lower()
+        .str.replace(r"^ms\s*", "", regex=True)
+        .str.strip()
+    )
+    program_series = (
+        _get_series(df, program_col).astype(str).str.strip() if program_col else pd.Series(["" for _ in range(len(df))])
+    )
+
+    first_series = _get_series(df, first_col).astype(str)
+    last_series = _get_series(df, last_name_col).astype(str)
+
+    per_event: Dict[str, Any] = {}
+    cadets: List[Dict[str, Any]] = []
+    cadet_index: Dict[str, Dict[str, Any]] = {}
+    by_name: Dict[str, Dict[str, Any]] = {}
+    ms_levels_set = set()
+
+    for idx, row in df.iterrows():
+        first = first_series.iloc[idx].strip()
+        last = last_series.iloc[idx].strip()
+        name = _normalize_name(first, last)
+        if not name:
+            continue
+
+        ms_value = ms_series.iloc[idx] or ""
+        if ms_value:
+            ms_levels_set.add(ms_value)
+        program_value = program_series.iloc[idx].strip()
+
+        slug_base = _slugify(name)
+        slug = f"{slug_base}-{header_idx + 2 + idx}"
+
+        attendance_entries: List[Dict[str, Any]] = []
+        status_counts = {status: 0 for status in STATUS_KEYS}
+
+        for col_info in date_columns:
+            header = col_info["header"]
+            raw_value = str(row.get(header, "") or "").strip()
+            normalized = _classify_status(raw_value)
+            entry = {
+                "date": col_info["iso"],
+                "label": header,
+                "event": col_info["event"],
+                "status": normalized or raw_value,
+                "normalized_status": normalized or "",
+            }
+            attendance_entries.append(entry)
+
+            if normalized:
+                status_counts[normalized] += 1
+                event_bucket = per_event.setdefault(
+                    col_info["iso"],
+                    {
+                        "iso": col_info["iso"],
+                        "header": header,
+                        "event": col_info["event"],
+                        "counts": {status: 0 for status in STATUS_KEYS},
+                        "per_ms": {},
+                        "names": {status: [] for status in STATUS_KEYS},
+                    },
+                )
+                event_bucket["counts"][normalized] += 1
+                ms_counts = event_bucket["per_ms"].setdefault(ms_value, {status: 0 for status in STATUS_KEYS})
+                ms_counts[normalized] += 1
+                event_bucket["names"][normalized].append(
+                    {
+                        "name": name,
+                        "slug": slug,
+                        "ms": ms_value,
+                        "school": program_value,
+                    }
+                )
+
+        cadet_payload = {
+            "id": slug,
+            "name": name,
+            "first": first,
+            "last": last,
+            "ms": ms_value,
+            "school": program_value,
+            "normalized_name": _norm(name),
+            "sheet_row": header_idx + 2 + idx,
+            "attendance": attendance_entries,
+            "status_counts": status_counts,
+        }
+
+        cadets.append(cadet_payload)
+        cadet_index[slug] = cadet_payload
+        by_name[_norm(name)] = cadet_payload
+
+    events = []
+    for iso in sorted(per_event.keys()):
+        bucket = per_event[iso]
+        bucket["per_ms"] = {
+            ms: {status: counts.get(status, 0) for status in STATUS_KEYS}
+            for ms, counts in bucket["per_ms"].items()
+        }
+        events.append(
+            {
+                "iso": iso,
+                "header": bucket["header"],
+                "event": bucket["event"],
+                "counts": {status: bucket["counts"].get(status, 0) for status in STATUS_KEYS},
+                "per_ms": bucket["per_ms"],
+                "names": bucket["names"],
+            }
+        )
+
+    latest_event = events[-1] if events else None
+
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "header_row": header_idx + 1,
+        "last_column_index": last_col,
+        "ms_levels": sorted(ms_levels_set),
+        "date_columns": date_columns,
+        "events": events,
+        "latest_event": latest_event,
+        "cadets": cadets,
+        "cadet_index": cadet_index,
+        "by_name": by_name,
+        "per_event": per_event,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Availability cache builder
+# ---------------------------------------------------------------------------
+
+
+def build_availability_cache(csv_url: str, name_column_override: str = "") -> Dict[str, Any]:
+    response = requests.get(csv_url, timeout=30)
+    response.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
+    name_column = ""
+
+    if name_column_override and name_column_override in df.columns:
+        name_column = name_column_override
+    else:
+        candidates = [
+            "full name",
+            "name",
+            "cadet name",
+            "cadet",
+            "preferred name",
+            "re:^name$",
+        ]
+        norm_map = {col: _norm(col) for col in df.columns}
+        for cand in candidates:
+            norm_cand = _norm(cand)
+            for col, nm in norm_map.items():
+                if nm == norm_cand:
+                    name_column = col
+                    break
+            if name_column:
+                break
+
+    first_col = _find_col(df, ["firstname", "first", "fname", "re:^first\\b"])
+    last_col = _find_col(df, ["lastname", "last", "lname", "re:^last\\b"])
+
+    entries: List[Dict[str, Any]] = []
+    index: Dict[str, Dict[str, Any]] = {}
+    by_name: Dict[str, Dict[str, Any]] = {}
+
+    for _, row in df.iterrows():
+        if name_column:
+            name = str(row.get(name_column, "")).strip()
+        else:
+            first = str(row.get(first_col, "")).strip()
+            last = str(row.get(last_col, "")).strip()
+            name = _normalize_name(first, last)
+
+        name = _clean_text(name)
+        if not name:
+            continue
+
+        slug = f"{_slugify(name)}-{len(entries)+1}"
+        row_dict = {col: _clean_text(str(row[col])) for col in df.columns}
+
+        day_map: Dict[str, List[Dict[str, Any]]] = {day: [] for day in DAY_ALIASES}
+
+        for column, raw_value in row_dict.items():
+            lower_header = column.lower()
+            target_day = None
+            for canonical, aliases in DAY_ALIASES.items():
+                if any(alias in lower_header for alias in aliases):
+                    target_day = canonical
+                    break
+            if not target_day:
+                continue
+
+            tokens = _tokenise(column + " " + raw_value)
+            day_map[target_day].append(
+                {
+                    "column": column,
+                    "value": raw_value,
+                    "tokens": tokens,
+                    "available": _bool_from_response(raw_value),
+                }
+            )
+
+        entry = {
+            "id": slug,
+            "name": name,
+            "normalized_name": _norm(name),
+            "raw": row_dict,
+            "days": day_map,
+        }
+
+        entries.append(entry)
+        index[slug] = entry
+        by_name[_norm(name)] = entry
+
+    entries.sort(key=lambda item: item["name"].split(" ")[-1].lower())
+
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "entries": entries,
+        "index": index,
+        "by_name": by_name,
+    }
+
+
+# ---------------------------------------------------------------------------
+# UMR cache builder
+# ---------------------------------------------------------------------------
+
+
+def build_umr_cache(sheet_id: str, tab_name: str, mapping_json: str = "") -> Dict[str, Any]:
+    ws = _open_ws(SheetConfig(sheet_id, tab_name))
+    entries: List[Dict[str, Any]] = []
+
+    if mapping_json:
+        try:
+            mapping = json.loads(mapping_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("UMR_MAPPING_JSON is not valid JSON") from exc
+
+        if not isinstance(mapping, list):
+            raise ValueError("UMR mapping must be a list of objects")
+
+        for item in mapping:
+            if not isinstance(item, dict):
+                continue
+            position_cell = item.get("position_cell")
+            name_cell = item.get("name_cell")
+            title_cell = item.get("title_cell")
+            if not (position_cell and name_cell):
+                continue
+            position = ws.acell(position_cell).value
+            name = ws.acell(name_cell).value
+            title = ws.acell(title_cell).value if title_cell else ""
+            entries.append(
+                {
+                    "position": _clean_text(position),
+                    "name": _clean_text(name),
+                    "title": _clean_text(title),
+                    "cells": {
+                        "position": position_cell,
+                        "name": name_cell,
+                        "title": title_cell or "",
+                    },
+                }
+            )
+    else:
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows, start=1):
+            if len(row) < 2:
+                continue
+            position = _clean_text(row[0])
+            name = _clean_text(row[1])
+            title = _clean_text(row[2]) if len(row) > 2 else ""
+            if not (position or name or title):
+                continue
+            entries.append(
+                {
+                    "position": position,
+                    "name": name,
+                    "title": title,
+                    "cells": {
+                        "position": f"A{i}",
+                        "name": f"B{i}",
+                        "title": f"C{i}",
+                    },
+                }
+            )
+
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "entries": entries,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Writer helpers
+# ---------------------------------------------------------------------------
+
+
+def _hex_to_rgb(hex_color: str) -> Dict[str, float]:
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        raise ValueError("Color must be 6 hex characters")
+    r = int(value[0:2], 16) / 255.0
+    g = int(value[2:4], 16) / 255.0
+    b = int(value[4:6], 16) / 255.0
+    return {"red": r, "green": g, "blue": b}
+
+
+def ensure_date_column(
+    ws: gspread.Worksheet,
+    header_row: int,
+    date_columns: List[Dict[str, Any]],
+    target_iso: str,
+    event_label: str,
+    last_column_index: int,
+) -> Tuple[int, List[Dict[str, Any]]]:
+    for col_info in date_columns:
+        if col_info["iso"] == target_iso:
+            header_value = col_info["header"]
+            if event_label and event_label.lower() not in header_value.lower():
+                new_header = f"{_mdyyyy_from_iso(target_iso)} + {event_label}".strip()
+                ws.update_cell(header_row, col_info["column_index"], new_header)
+                col_info["header"] = new_header
+                col_info["event"] = event_label
+            return col_info["column_index"], date_columns
+
+    new_col_index = last_column_index + 1
+    header_text = _mdyyyy_from_iso(target_iso)
+    if event_label:
+        header_text += f" + {event_label}" if "+" not in event_label else f" {event_label}"
+    ws.update_cell(header_row, new_col_index, header_text)
+    date_columns.append(
+        {
+            "header": header_text,
+            "iso": target_iso,
+            "event": event_label,
+            "column_index": new_col_index,
+        }
+    )
+    date_columns.sort(key=lambda c: c["iso"])
+    return new_col_index, date_columns
+
+
+def write_attendance_entries(
+    sheet_id: str,
+    tab_name: str,
+    header_row: int,
+    date_columns: List[Dict[str, Any]],
+    last_column_index: int,
+    target_iso: str,
+    event_label: str,
+    updates: List[Dict[str, Any]],
+    color_present: str,
+    color_ftr: str,
+    color_excused: str,
+):
+    if not updates:
+        return {"updated": 0}
+
+    ws = _open_ws(SheetConfig(sheet_id, tab_name))
+    column_index, updated_columns = ensure_date_column(ws, header_row, date_columns, target_iso, event_label, last_column_index)
+
+    value_cells = []
+    format_requests = []
+
+    color_map = {
+        "Present": _hex_to_rgb(color_present),
+        "FTR": _hex_to_rgb(color_ftr),
+        "Excused": _hex_to_rgb(color_excused),
+    }
+
+    for payload in updates:
+        row_number = payload["sheet_row"]
+        status = payload["status"]
+        if not status:
+            continue
+        value = status
+        note = payload.get("note", "").strip()
+        if status == "Excused" and note:
+            value = f"Excused - {note}" if not status.lower().startswith("excused") else f"{status} - {note}"
+
+        a1 = rowcol_to_a1(row_number, column_index)
+        value_cells.append(Cell(row_number, column_index, value))
+        if status in color_map:
+            format_requests.append(
+                {
+                    "range": a1,
+                    "format": {"userEnteredFormat": {"backgroundColor": color_map[status]}},
+                }
+            )
+
+    if value_cells:
+        ws.update_cells(value_cells, value_input_option="USER_ENTERED")
+
+    for request in format_requests:
+        ws.format(request["range"], request["format"])
+
+    return {"updated": len(value_cells), "column_index": column_index, "date_columns": updated_columns}
+
+
+# ---------------------------------------------------------------------------
+# Legacy CLI compatibility wrappers (used by the CLI + cache helpers)
+# ---------------------------------------------------------------------------
+
 
 def get_attendance_by_date(sheet_id, tab_name, target_date, ms_level) -> Dict[str, List[str]]:
     cfg = SheetConfig(sheet_id=sheet_id, tab_name=tab_name)
     ws = _open_ws(cfg)
     df = _sheet_to_df(ws)
 
-    first_col = _find_col(df, [
-        'namefirst','firstname','first','fname','givenname',
-        're:^name.*first$', 're:^first\\b'
-    ])
-    last_col = _find_col(df, [
-        'namelast','lastname','last','lname','surname','familyname',
-        're:^name.*last$', 're:^last\\b'
-    ])
-    ms_col = _find_col(df, [
-        'mslevel','ms','mslvl','msyear','msclass','mscohort',
-        're:^ms\\s*level$', 're:^ms\\b'
-    ]) or _guess_ms_col(df)
+    first_col = _find_col(
+        df,
+        [
+            "namefirst",
+            "firstname",
+            "first",
+            "fname",
+            "givenname",
+            "re:^name.*first$",
+            "re:^first\\b",
+        ],
+    )
+    last_col = _find_col(
+        df,
+        [
+            "namelast",
+            "lastname",
+            "last",
+            "lname",
+            "surname",
+            "familyname",
+            "re:^name.*last$",
+            "re:^last\\b",
+        ],
+    )
+    ms_col = _find_col(
+        df,
+        ["mslevel", "ms", "mslvl", "msyear", "msclass", "mscohort", "re:^ms\\s*level$", "re:^ms\\b"],
+    ) or _guess_ms_col(df)
 
     if not (first_col and last_col and ms_col):
         raise ValueError("Missing columns for First/Last/MS.")
@@ -225,11 +807,7 @@ def get_attendance_by_date(sheet_id, tab_name, target_date, ms_level) -> Dict[st
         raise ValueError(f"No column for date {target_date}")
 
     df["_MS"] = (
-        _get_series(df, ms_col)
-        .astype(str)
-        .str.lower()
-        .str.replace(r"^ms\s*", "", regex=True)
-        .str.strip()
+        _get_series(df, ms_col).astype(str).str.lower().str.replace(r"^ms\s*", "", regex=True).str.strip()
     )
     wanted_ms = str(ms_level).lower().replace("ms", "").strip()
     df_ms = df[df["_MS"] == wanted_ms].copy()
@@ -251,16 +829,16 @@ def get_cadet_record(sheet_id, tab_name, first_name=None, last_name=None, full_n
             target_first, target_last = full_name.strip(), ""
     else:
         target_first = (first_name or "").strip()
-        target_last  = (last_name  or "").strip()
+        target_last = (last_name or "").strip()
     target_full = _normalize_name(target_first, target_last).lower()
 
     cfg = SheetConfig(sheet_id=sheet_id, tab_name=tab_name)
     ws = _open_ws(cfg)
     df = _sheet_to_df(ws)
 
-    first_col = _find_col(df, ['namefirst','firstname','first','fname','givenname','re:^name.*first$', 're:^first\\b'])
-    last_col = _find_col(df,  ['namelast','lastname','last','lname','surname','familyname','re:^name.*last$', 're:^last\\b'])
-    ms_col = _find_col(df,   ['mslevel','ms','mslvl','msyear','msclass','mscohort','re:^ms\\s*level$', 're:^ms\\b']) or _guess_ms_col(df)
+    first_col = _find_col(df, ["namefirst", "firstname", "first", "fname", "givenname", "re:^name.*first$", "re:^first\\b"])
+    last_col = _find_col(df, ["namelast", "lastname", "last", "lname", "surname", "familyname", "re:^name.*last$", "re:^last\\b"])
+    ms_col = _find_col(df, ["mslevel", "ms", "mslvl", "msyear", "msclass", "mscohort", "re:^ms\\s*level$", "re:^ms\\b"]) or _guess_ms_col(df)
 
     if not (first_col and last_col and ms_col):
         raise ValueError("Missing columns for First/Last/MS.")
@@ -270,8 +848,7 @@ def get_cadet_record(sheet_id, tab_name, first_name=None, last_name=None, full_n
         raise ValueError("No attendance date columns found.")
 
     df["_full"] = (
-        _get_series(df, first_col).astype(str).str.strip() + " " +
-        _get_series(df, last_col).astype(str).str.strip()
+        _get_series(df, first_col).astype(str).str.strip() + " " + _get_series(df, last_col).astype(str).str.strip()
     ).str.lower()
 
     match = df[df["_full"] == target_full]
@@ -280,7 +857,7 @@ def get_cadet_record(sheet_id, tab_name, first_name=None, last_name=None, full_n
     return match.iloc[0][date_cols]
 
 
-def daily_report(sheet_id, tab_name, target_date, ms_levels=("1","2","3","4","5"), include_name_lists=False):
+def daily_report(sheet_id, tab_name, target_date, ms_levels=("1", "2", "3", "4", "5"), include_name_lists=False):
     ms_levels = [str(x).strip() for x in ms_levels]
     rows, names_by_ms = [], {}
     total_present = total_ftr = total_excused = 0
@@ -288,8 +865,10 @@ def daily_report(sheet_id, tab_name, target_date, ms_levels=("1","2","3","4","5"
     for ms in ms_levels:
         buckets = get_attendance_by_date(sheet_id, tab_name, target_date, ms)
         p, f, e = len(buckets["Present"]), len(buckets["FTR"]), len(buckets["Excused"])
-        rows.append({"MS Level": ms, "Present": p, "FTR": f, "Excused": e, "Total": p+f+e})
-        total_present += p; total_ftr += f; total_excused += e
+        rows.append({"MS Level": ms, "Present": p, "FTR": f, "Excused": e, "Total": p + f + e})
+        total_present += p
+        total_ftr += f
+        total_excused += e
         if include_name_lists:
             names_by_ms[ms] = buckets
 
@@ -307,22 +886,26 @@ def daily_report(sheet_id, tab_name, target_date, ms_levels=("1","2","3","4","5"
 
 
 def print_daily_report(report: dict):
-    rows = report["table"]; overall = report["overall"]
+    rows = report["table"]
+    overall = report["overall"]
     print(f"{'MS Level':<8} {'Present':>7} {'FTR':>7} {'Excused':>8} {'Total':>7}")
-    print("-"*42)
+    print("-" * 42)
     for r in rows:
         print(f"{r['MS Level']:<8} {r['Present']:>7} {r['FTR']:>7} {r['Excused']:>8} {r['Total']:>7}")
-    print("-"*42)
-    print(f"{overall['MS Level']:<8} {overall['Present']:>7} {overall['FTR']:>7} "
-          f"{overall['Excused']:>8} {overall['Total']:>7}")
+    print("-" * 42)
+    print(
+        f"{overall['MS Level']:<8} {overall['Present']:>7} {overall['FTR']:>7} "
+        f"{overall['Excused']:>8} {overall['Total']:>7}"
+    )
 
 
-# ---------- CLI ----------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage:\n  by-date SHEET_ID TAB_NAME TARGET_DATE MS_LEVEL\n"
-              "  cadet SHEET_ID TAB_NAME FIRST LAST\n"
-              "  daily SHEET_ID TAB_NAME TARGET_DATE [MS_LEVELS_COMMA_SEPARATED]")
+        print(
+            "Usage:\n  by-date SHEET_ID TAB_NAME TARGET_DATE MS_LEVEL\n"
+            "  cadet SHEET_ID TAB_NAME FIRST LAST\n"
+            "  daily SHEET_ID TAB_NAME TARGET_DATE [MS_LEVELS_COMMA_SEPARATED]"
+        )
         sys.exit(1)
 
     mode = sys.argv[1].lower()
@@ -330,14 +913,18 @@ if __name__ == "__main__":
     if mode == "by-date":
         _, _, sheet_id, tab_name, target_date, ms_level = sys.argv
         res = get_attendance_by_date(sheet_id, tab_name, target_date, ms_level)
-        print(pd.Series({k: len(v) for k, v in res.items()})); print(res)
+        print(pd.Series({k: len(v) for k, v in res.items()}))
+        print(res)
     elif mode == "cadet":
         _, _, sheet_id, tab_name, first, last = sys.argv
         s = get_cadet_record(sheet_id, tab_name, first_name=first, last_name=last)
-        out = pd.DataFrame({"DateCol": s.index, "Status": s.values}); print(out.to_string(index=False))
+        out = pd.DataFrame({"DateCol": s.index, "Status": s.values})
+        print(out.to_string(index=False))
     elif mode == "daily":
         _, _, sheet_id, tab_name, target_date, *rest = sys.argv
-        ms_levels = tuple(str(rest[0]).split(",")) if rest else ("1","2","3","4","5")
-        rep = daily_report(sheet_id, tab_name, target_date, ms_levels=ms_levels); print_daily_report(rep)
+        ms_levels = tuple(str(rest[0]).split(",")) if rest else ("1", "2", "3", "4", "5")
+        rep = daily_report(sheet_id, tab_name, target_date, ms_levels=ms_levels)
+        print_daily_report(rep)
     else:
         print("Unknown mode. Use 'by-date', 'cadet', or 'daily'.")
+

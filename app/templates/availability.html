@@ -1,22 +1,69 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Availability Checker</h2>
-<form method="post">
-  <label>Select Day:</label>
-  <input type="text" name="day" placeholder="e.g. Monday or Mon">
+<section class="availability-header">
+  <h2>Availability Checker</h2>
+  <p class="muted">Search the availability roster by day and time keyword. Results link directly to each cadet&rsquo;s directory profile.</p>
+</section>
+
+<form method="post" class="availability-form">
+  <label for="day">Day</label>
+  <input type="text" name="day" id="day" list="day-options" placeholder="e.g. Monday" value="{{ selected_day }}" required>
+  <datalist id="day-options">
+    {% for day in day_options %}
+    <option value="{{ day }}">
+    {% endfor %}
+  </datalist>
+
+  <label for="time">Time or keyword <span class="muted">(optional)</span></label>
+  <input type="text" name="time" id="time" list="time-options" placeholder="e.g. 0600 or morning" value="{{ selected_time }}">
+  <datalist id="time-options">
+    {% for token in time_suggestions %}
+    <option value="{{ token }}">
+    {% endfor %}
+  </datalist>
+
   <button type="submit">Search</button>
 </form>
+
 {% if results %}
-  <h3>Results for {{ selected_day|capitalize }}</h3>
-  <table>
-    <tr><th>Name</th><th>Available</th><th>Time Window</th></tr>
-    {% for r in results %}
-    <tr>
-      <td>{{ r.name }}</td>
-      <td>{{ "✅" if r.available else "❌" }}</td>
-      <td>{{ r.time }}</td>
-    </tr>
-    {% endfor %}
+  <h3>Results</h3>
+  <table class="availability-table">
+    <thead>
+      <tr>
+        <th>Cadet</th>
+        <th>MS</th>
+        <th>School</th>
+        <th>Status</th>
+        <th>Responses</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in results %}
+      <tr>
+        <td><a href="{{ url_for('directory.cadet_detail', cadet_id=row.cadet.id) }}">{{ row.cadet.name }}</a></td>
+        <td>{{ row.cadet.ms }}</td>
+        <td>{{ row.cadet.school or '—' }}</td>
+        <td class="availability-status">
+          {% if row.available is true %}✅ Available{% elif row.available is false %}❌ Not available{% elif row.has_availability %}Pending{% else %}No response{% endif %}
+        </td>
+        <td>
+          {% if row.responses %}
+          <ul>
+            {% for resp in row.responses %}
+            <li><strong>{{ resp.column }}:</strong> {{ resp.value or '—' }}</li>
+            {% endfor %}
+          </ul>
+          {% elif row.has_availability %}
+          <span class="muted">No responses matched the selected time.</span>
+          {% else %}
+          <span class="muted">No availability record.</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
   </table>
+{% elif selected_day %}
+  <p class="muted">No availability responses matched your filters.</p>
 {% endif %}
 {% endblock %}
