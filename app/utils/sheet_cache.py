@@ -51,16 +51,29 @@ def _should_refresh(app, cache_name):
 # --- integrations loader (lazy & package-safe) ---
 def _load_from_sheet(app):
     """
-    Import the Google Sheets integration lazily so we avoid circular imports
-    and so it works regardless of PYTHONPATH (relative first, absolute fallback).
+    Call the Google Sheets integration with the tab name and the date
+    we want the 'daily' report for. Uses today's date in TZ unless before
+    the refresh hour, in which case use yesterday to avoid empty reports.
     """
-    try:
-        from ..integrations.google_sheets_attendance import daily_report
-        log.info("Loaded daily_report via relative import.")
-    except ImportError:
-        from app.integrations.google_sheets_attendance import daily_report
-        log.info("Loaded daily_report via absolute import fallback.")
-    return daily_report(app)
+    from ..integrations.google_sheets_attendance import daily_report
+
+    # 1) Tab name from config (default matches your sheet)
+    tab = app.config.get("ATTENDANCE_TAB_NAME", "Attendance Roster")
+
+    # 2) Pick a target date in your timezone
+    tz = pytz.timezone(app.config.get("TZ", "America/Chicago"))
+    now = datetime.now(tz)
+    refresh_hour = app.config.get("CACHE_REFRESH_HOUR", 5)
+    # If it's before the daily refresh time, use yesterday's date
+    target_date = (now - timedelta(days=1)).date() if now.hour < refresh_hour else now.date()
+
+    # 3) Call the integration
+    # If your integration wants a string, uncomment one of these lines:
+    # target_date = target_date.strftime("%Y-%m-%d")
+    # target_date = target_date.strftime("%-m/%-d/%Y")  # e.g., 10/30/2025 on Linux
+
+    return daily_report(tab, target_date)
+
 
 # --- cache ops ---
 def refresh_cache(app, cache_name="attendance"):
