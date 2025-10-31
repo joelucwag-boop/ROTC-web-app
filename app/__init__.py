@@ -4,6 +4,10 @@ from flask import Flask
 from .config import Config
 from .utils.logger import init_logging
 from .utils.sheet_cache import init_cache_scheduler
+import sys, os
+print("PYTHONPATH:", sys.path)
+print("APP PACKAGE FILE:", __file__)
+print("Dir(app/integrations):", os.listdir(os.path.join(os.path.dirname(__file__), "integrations")))
 
 
 def create_app():
