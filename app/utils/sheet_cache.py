@@ -22,12 +22,19 @@ log.info("INTEGRATIONS LIST=%s", os.listdir(os.path.join(os.path.dirname(__file_
 
 log = logging.getLogger(__name__)
 
-CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-CACHE_FILE = CACHE_DIR / "attendance.pkl"
+
 
 def _load_from_sheet(app):
     # <-- this is the ONLY place we import the integration
+    log.info("About to import daily_report using relative import...")
+try:
+    from ..integrations.google_sheets_attendance import daily_report
+    log.info("Imported daily_report RELATIVE from: %s", pathlib.Path(daily_report.__code__.co_filename))
+except ImportError as e:
+    log.exception("Relative import failed: %s", e)
+    from app.integrations.google_sheets_attendance import daily_report
+    log.info("Imported daily_report ABSOLUTE from: %s", pathlib.Path(daily_report.__code__.co_filename))
+
     try:
         from ..integrations.google_sheets_attendance import daily_report
         log.info("Loaded daily_report via relative import.")
@@ -53,7 +60,9 @@ CACHE_FILES = {
     "umr": "umr.pkl",
 }
 
-
+CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_FILE = CACHE_DIR / "attendance.pkl"
 def _cache_path(app, name):
     os.makedirs(app.config["CACHE_DIR"], exist_ok=True)
     return os.path.join(app.config["CACHE_DIR"], CACHE_FILES[name])
