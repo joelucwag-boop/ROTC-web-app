@@ -87,13 +87,19 @@ def create_app():
             ("Waterfall", "waterfall.index"),
             ("Admin", "admin.index"),
         ]
-<<<<<<< codex/build-robust-python-flask-web-app-ydw52j
 
-=======
->>>>>>> main
         available = []
         for label, endpoint in nav_items:
             if endpoint not in app.view_functions:
+                app.logger.debug(
+                    "Navigation endpoint unavailable; skipping",
+                    extra={"endpoint": endpoint},
+                )
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+         main
                 continue
 
             try:
