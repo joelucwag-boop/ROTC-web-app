@@ -16,6 +16,7 @@ def reports():
     except Exception:
         app.logger.exception("Failed to load attendance cache for reports")
         data = {}
+    data = get_cached_data(app, "attendance")
 
     events = list(reversed(data.get("events", [])))  # newest first
     ms_levels = [ms for ms in data.get("ms_levels", []) if ms]
