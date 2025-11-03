@@ -143,6 +143,56 @@ def create_app():
         except Exception:
             app.logger.exception("Failed to prepare navigation links")
             return {"nav_links": []}
+        nav_items = [
+            ("Home", "home.index"),
+            ("Writer", "writer.index"),
+            ("Reports", "reports.index"),
+            ("Directory", "directory.index"),
+            ("Availability", "availability.index"),
+            ("OML", "oml.index"),
+            ("Waterfall", "waterfall.index"),
+            ("Admin", "admin.index"),
+        ]
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+                app.logger.debug(
+                    "Navigation endpoint unavailable; skipping",
+                    extra={"endpoint": endpoint},
+                )
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+         main
+                continue
+
+            try:
+                href = url_for(endpoint)
+            except Exception:
+                app.logger.warning(
+                    "Navigation link could not be generated",
+                    extra={"endpoint": endpoint},
+                )
+                continue
+
+            available.append(
+                {
+                    "label": label,
+                    "endpoint": endpoint,
+                    "href": href,
+                }
+            )
+
+            available.append({"label": label, "endpoint": endpoint, "href": href})
+                available.append({"label": label, "endpoint": endpoint})
+            except Exception:
+                app.logger.debug(
+                    "Skipping navigation item due to unresolved endpoint",
+                    extra={"endpoint": endpoint},
+                )
+        return {"nav_links": available}
 
     # ---- start scheduler once ----
     if not app.config.get("SCHEDULER_STARTED", False):
