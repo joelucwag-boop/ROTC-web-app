@@ -1,18 +1,79 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Daily Report Summary</h2>
-<table>
-  <tr><th>MS Level</th><th>Present</th><th>FTR</th><th>Excused</th><th>Total</th></tr>
-  {% for row in table %}
-  <tr>
-    <td>{{ row['MS Level'] }}</td>
-    <td>{{ row['Present'] }}</td>
-    <td>{{ row['FTR'] }}</td>
-    <td>{{ row['Excused'] }}</td>
-    <td>{{ row['Total'] }}</td>
-  </tr>
-  {% endfor %}
-</table>
-<h3>Overall Totals</h3>
-<p>Present : {{ overall['Present'] }} | FTR : {{ overall['FTR'] }} | Excused : {{ overall['Excused'] }}</p>
+<div class="reports-header">
+  <h2>Attendance Reports</h2>
+  <p class="muted">Select an event to review MS-level breakdowns and individual attendance.</p>
+</div>
+
+<div class="reports-grid">
+  <aside class="event-list">
+    <h3>Events</h3>
+    <ul>
+      {% for event in events %}
+      <li class="{% if selected_event and selected_event.iso == event.iso %}active{% endif %}">
+        <a href="{{ url_for('reports.reports', date=event.iso) }}">
+          <span class="event-label">{{ event.header }}</span>
+          <span class="event-counts">P: {{ event.counts.Present }} | FTR: {{ event.counts.FTR }} | EX: {{ event.counts.Excused }}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </aside>
+
+  <section class="event-detail">
+    {% if selected_event %}
+    <h3>{{ selected_event.header }}</h3>
+    {% if selected_event.event %}<p class="muted">{{ selected_event.event }}</p>{% endif %}
+    <table class="metrics">
+      <thead>
+        <tr><th>Status</th><th>Count</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Present</td><td>{{ selected_event.counts.Present }}</td></tr>
+        <tr><td>FTR</td><td>{{ selected_event.counts.FTR }}</td></tr>
+        <tr><td>Excused</td><td>{{ selected_event.counts.Excused }}</td></tr>
+      </tbody>
+    </table>
+
+    <section class="ms-breakdown">
+      <h4>Per-MS Details</h4>
+      {% for ms in ms_levels %}
+      {% set bucket = names_by_ms.get(ms, {}) %}
+      <div class="ms-card">
+        <h5>MS{{ ms }}</h5>
+        <div class="status-column present">
+          <h6>Present</h6>
+          <ul>
+            {% for cadet in bucket.get('Present', []) %}
+            <li><a href="{{ url_for('directory.cadet_detail', cadet_id=cadet.slug) }}">{{ cadet.name }}</a>{% if cadet.school %} <span class="muted">({{ cadet.school }})</span>{% endif %}</li>
+            {% endfor %}
+            {% if not bucket.get('Present') %}<li class="muted">None recorded</li>{% endif %}
+          </ul>
+        </div>
+        <div class="status-column ftr">
+          <h6>FTR</h6>
+          <ul>
+            {% for cadet in bucket.get('FTR', []) %}
+            <li><a href="{{ url_for('directory.cadet_detail', cadet_id=cadet.slug) }}">{{ cadet.name }}</a>{% if cadet.school %} <span class="muted">({{ cadet.school }})</span>{% endif %}</li>
+            {% endfor %}
+            {% if not bucket.get('FTR') %}<li class="muted">None recorded</li>{% endif %}
+          </ul>
+        </div>
+        <div class="status-column excused">
+          <h6>Excused</h6>
+          <ul>
+            {% for cadet in bucket.get('Excused', []) %}
+            <li><a href="{{ url_for('directory.cadet_detail', cadet_id=cadet.slug) }}">{{ cadet.name }}</a>{% if cadet.school %} <span class="muted">({{ cadet.school }})</span>{% endif %}</li>
+            {% endfor %}
+            {% if not bucket.get('Excused') %}<li class="muted">None recorded</li>{% endif %}
+          </ul>
+        </div>
+      </div>
+      {% endfor %}
+    </section>
+    {% else %}
+    <p class="muted">No attendance events were found in the cache.</p>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}

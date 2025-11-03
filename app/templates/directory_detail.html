@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="cadet-profile">
+  <h2>{{ cadet.name }}</h2>
+  <p class="muted">MS{{ cadet.ms }}{% if cadet.school %} &mdash; {{ cadet.school }}{% endif %}</p>
+
+  <div class="counts">
+    <div class="count-card present">Present<br><strong>{{ cadet.status_counts.get('Present', 0) }}</strong></div>
+    <div class="count-card ftr">FTR<br><strong>{{ cadet.status_counts.get('FTR', 0) }}</strong></div>
+    <div class="count-card excused">Excused<br><strong>{{ cadet.status_counts.get('Excused', 0) }}</strong></div>
+  </div>
+
+  <section class="timeline">
+    <h3>Attendance Timeline</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Event</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in cadet.attendance|sort(attribute='date', reverse=True) %}
+        <tr class="status-{{ entry.normalized_status|lower }}">
+          <td>{{ entry.label }}</td>
+          <td>{{ entry.event or '—' }}</td>
+          <td>{{ entry.status or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="availability">
+    <h3>Availability Responses</h3>
+    {% if availability_entry %}
+      {% set days = availability_entry.days %}
+      {% for day, responses in days.items() if responses %}
+      <h4>{{ day|capitalize }}</h4>
+      <table>
+        <thead>
+          <tr><th>Prompt</th><th>Response</th><th>Available?</th></tr>
+        </thead>
+        <tbody>
+          {% for resp in responses %}
+          <tr>
+            <td>{{ resp.column }}</td>
+            <td>{{ resp.value or '—' }}</td>
+            <td>{% if resp.available is not none %}{{ '✅' if resp.available else '❌' }}{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endfor %}
+      <details>
+        <summary>Show raw responses</summary>
+        <dl class="raw-responses">
+        {% for key, value in availability_entry.raw.items() %}
+          <dt>{{ key }}</dt>
+          <dd>{{ value or '—' }}</dd>
+        {% endfor %}
+        </dl>
+      </details>
+    {% else %}
+    <p class="muted">No availability record found for this cadet.</p>
+    {% endif %}
+  </section>
+
+  <p><a class="link-button" href="{{ url_for('directory.directory') }}">&larr; Back to directory</a></p>
+</section>
+{% endblock %}

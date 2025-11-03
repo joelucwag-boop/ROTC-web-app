@@ -11,14 +11,9 @@
     <h1>GSU Attendance Dashboard</h1>
 <!-- app/templates/base.html (example) -->
       <nav>
-        <a href="{{ url_for('home.index') }}">Home</a>
-        <a href="{{ url_for('writer.index') }}">Writer</a>
-        <a href="{{ url_for('reports.index') }}">Reports</a>
-        <a href="{{ url_for('directory.index') }}">Directory</a>
-        <a href="{{ url_for('availability.index') }}">Availability</a>
-        <a href="{{ url_for('oml.index') }}">OML</a>
-        <a href="{{ url_for('waterfall.index') }}">Waterfall</a>
-        <a href="{{ url_for('admin.index') }}">Admin</a>
+        {% for link in nav_links %}
+          <a href="{{ link.href }}">{{ link.label }}</a>
+        {% endfor %}
       </nav>
 
   </header>
