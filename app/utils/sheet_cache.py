@@ -45,6 +45,7 @@ def _cache_path(app, name: str) -> str:
     return os.path.join(cache_dir, CACHE_FILES[name])
 
 
+
 def _get_timezone(app):
     tz_name = app.config.get("TZ", "America/Chicago")
     try:
@@ -56,6 +57,23 @@ def _get_timezone(app):
 
 def _now_tz(app) -> datetime:
     tz = _get_timezone(app)
+
+def _get_timezone(app):
+    tz_name = app.config.get("TZ", "America/Chicago")
+    try:
+        return pytz.timezone(tz_name)
+    except Exception:
+        log.warning("Invalid timezone '%s'; defaulting to UTC", tz_name)
+        return pytz.UTC
+
+
+def _now_tz(app) -> datetime:
+    tz = _get_timezone(app)
+
+
+def _now_tz(app) -> datetime:
+    tz_name = app.config.get("TZ", "America/Chicago")
+    tz = pytz.timezone(tz_name)
     return datetime.now(tz)
 
 
@@ -86,6 +104,12 @@ def _should_refresh(app, cache_name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# Loader registry
+# ---------------------------------------------------------------------------
+
+
 def _load_attendance(app) -> Dict[str, Any]:
     from ..integrations.google_sheets_attendance import build_attendance_cache
 
@@ -99,6 +123,70 @@ def _load_attendance(app) -> Dict[str, Any]:
         tab_name=tab_name,
         program_hint=app.config.get("PROGRAM_COLUMN", ""),
     )
+
+
+def _load_availability(app) -> Dict[str, Any]:
+    from ..integrations.google_sheets_attendance import build_availability_cache
+
+    url = app.config.get("AVAILABILITY_CSV_URL", "")
+    if not url:
+        log.info("Availability CSV URL not configured; returning empty dataset.")
+        return {"generated_at": _now_tz(app).isoformat(), "entries": [], "index": {}}
+
+    return build_availability_cache(
+        csv_url=url,
+        name_column_override=app.config.get("AVAILABILITY_NAME_COLUMN", ""),
+    )
+
+
+def _load_umr(app) -> Dict[str, Any]:
+    from ..integrations.google_sheets_attendance import build_umr_cache
+
+    sheet_id = app.config.get("SPREADSHEET_ID")
+    tab_name = app.config.get("UMR_TAB_NAME", "UMR")
+    if not sheet_id:
+        raise RuntimeError("SPREADSHEET_ID is not configured.")
+
+    return build_umr_cache(
+        sheet_id=sheet_id,
+        tab_name=tab_name,
+        mapping_json=app.config.get("UMR_MAPPING_JSON", ""),
+    )
+
+
+CACHE_LOADERS: Dict[str, Callable] = {
+    "attendance": _load_attendance,
+    "availability": _load_availability,
+    "umr": _load_umr,
+}
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+
+def refresh_cache(app, cache_name: str = "attendance") -> bool:
+    """Force refresh for a specific cache file."""
+
+    if cache_name not in CACHE_LOADERS:
+        raise KeyError(f"Unknown cache: {cache_name}")
+
+    loader = CACHE_LOADERS[cache_name]
+
+def _load_availability(app) -> Dict[str, Any]:
+    from ..integrations.google_sheets_attendance import build_availability_cache
+
+    url = app.config.get("AVAILABILITY_CSV_URL", "")
+    if not url:
+        log.info("Availability CSV URL not configured; returning empty dataset.")
+        return {"generated_at": _now_tz(app).isoformat(), "entries": [], "index": {}}
+
+    return build_availability_cache(
+        csv_url=url,
+        name_column_override=app.config.get("AVAILABILITY_NAME_COLUMN", ""),
+    )
+
 
 
 def _load_availability(app) -> Dict[str, Any]:
@@ -173,6 +261,7 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
                 "Cache '%s' refresh failed; returning empty dataset.", cache_name
             )
             return {}
+        refresh_cache(app, cache_name)
 
     path = _cache_path(app, cache_name)
     try:
@@ -194,6 +283,9 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
                 cache_name,
             )
             return {}
+        refresh_cache(app, cache_name)
+        with open(path, "rb") as fh:
+            return pickle.load(fh)
     except Exception:
         app.logger.exception("Error reading cache %s; returning empty dict", cache_name)
         return {}

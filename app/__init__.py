@@ -95,6 +95,11 @@ def create_app():
                     "Navigation endpoint unavailable; skipping",
                     extra={"endpoint": endpoint},
                 )
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+         main
                 continue
 
             try:
@@ -114,6 +119,13 @@ def create_app():
                 }
             )
 
+            available.append({"label": label, "endpoint": endpoint, "href": href})
+                available.append({"label": label, "endpoint": endpoint})
+            except Exception:
+                app.logger.debug(
+                    "Skipping navigation item due to unresolved endpoint",
+                    extra={"endpoint": endpoint},
+                )
         return {"nav_links": available}
 
     # ---- start scheduler once ----

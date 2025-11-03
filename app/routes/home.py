@@ -26,6 +26,7 @@ def index():
     except Exception:
         app.logger.exception("Failed to load attendance cache for dashboard")
         data = {}
+    data = get_cached_data(app, "attendance")
 
     events = data.get("events", [])
     latest_event = data.get("latest_event") or (events[-1] if events else None)

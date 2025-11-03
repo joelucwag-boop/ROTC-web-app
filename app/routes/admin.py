@@ -17,4 +17,5 @@ def refresh_cache_now():
     except Exception:
         current_app.logger.exception("Manual cache refresh failed", extra={"cache": cache_name})
         ok = False
+    ok = refresh_cache(current_app, cache_name)
     return jsonify({"ok": ok, "cache": cache_name})
