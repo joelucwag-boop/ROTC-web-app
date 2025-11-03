@@ -1,26 +1,103 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Attendance Writer (Protected)</h2>
-<form method="post">
-  <label>School:</label>
-  <select name="school">
-    <option value="GSU">GSU</option>
-    <option value="ULM">ULM</option>
-    <option value="Both">Both</option>
+<section class="writer-header">
+  <h2>Attendance Writer</h2>
+  <p class="muted">Select cadets and assign statuses for the chosen event. Only one status can be active per cadet.</p>
+  {% if not writes_enabled %}
+  <p class="warning">Writes are disabled in this environment. Set <code>ENABLE_WRITES=true</code> to allow updates.</p>
+  {% endif %}
+  {% if message %}
+  <p class="success">{{ message }}</p>
+  {% endif %}
+  {% if status_summary %}
+  <p class="muted">Summary: {% for status, count in status_summary.items() %}{{ status }} &times; {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+</section>
+
+<form class="group-selector" method="get">
+  <label for="school">School view</label>
+  <select name="school" id="school" onchange="this.form.submit()">
+    {% for key, cadet_list in all_groups.items() %}
+    <option value="{{ key }}" {% if selected_group == key %}selected{% endif %}>{{ key }}</option>
+    {% endfor %}
   </select>
-  <label>Event:</label>
-  <input type="text" name="event" placeholder="PT / Lab / Other">
-  <label>Status:</label>
-  <select name="status">
-    <option value="Present">Present</option>
-    <option value="FTR">FTR</option>
-    <option value="Excused">Excused</option>
-  </select>
-  <label>Date:</label>
-  <input type="date" name="date" value="{{ date_default }}">
-  <button type="submit">Submit</button>
 </form>
-{% if message %}
-<p><strong>{{ message }}</strong></p>
-{% endif %}
+
+<form method="post" class="writer-form">
+  <input type="hidden" name="school" value="{{ selected_group }}">
+  <div class="writer-controls">
+    <label for="date">Date</label>
+    <input type="date" id="date" name="date" value="{{ today }}">
+
+    <label for="event_preset">Event</label>
+    <select name="event_preset" id="event_preset">
+      <option value="">No preset</option>
+      {% for preset in event_presets %}
+      <option value="{{ preset }}">{{ preset }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="event_custom" id="event_custom" placeholder="Custom event label">
+  </div>
+
+  <table class="writer-table">
+    <thead>
+      <tr><th>Cadet</th><th>MS</th><th>Status</th><th>Excuse note</th></tr>
+    </thead>
+    <tbody>
+      {% for cadet in cadets %}
+      <tr data-cadet="{{ cadet.id }}">
+        <td>{{ cadet.name }}</td>
+        <td>{{ cadet.ms }}</td>
+        <td>
+          <div class="status-buttons" data-target="{{ cadet.id }}">
+            {% for status in status_options %}
+            <button type="button" class="status-btn" data-value="{{ status }}" data-target="{{ cadet.id }}">{{ status }}</button>
+            {% endfor %}
+          </div>
+          <input type="hidden" id="status-{{ cadet.id }}" name="status[{{ cadet.id }}]" value="">
+        </td>
+        <td>
+          <input type="text" name="note[{{ cadet.id }}]" placeholder="Optional note for excused">
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <button type="submit" {% if not writes_enabled %}disabled{% endif %}>Write Attendance</button>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const buttons = document.querySelectorAll('.status-btn');
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.target;
+      const input = document.getElementById(`status-${target}`);
+      const current = input.value;
+      const next = btn.dataset.value;
+      const groupButtons = document.querySelectorAll(`.status-btn[data-target="${target}"]`);
+      groupButtons.forEach(b => b.classList.remove('active'));
+      if (current === next) {
+        input.value = '';
+      } else {
+        input.value = next;
+        btn.classList.add('active');
+      }
+    });
+  });
+
+  const presetSelect = document.getElementById('event_preset');
+  const customInput = document.getElementById('event_custom');
+  const toggleCustom = () => {
+    const isCustom = presetSelect.value === 'Custom';
+    customInput.disabled = !isCustom;
+    if (!isCustom) {
+      customInput.value = '';
+    }
+  };
+  presetSelect.addEventListener('change', toggleCustom);
+  toggleCustom();
+});
+</script>
 {% endblock %}

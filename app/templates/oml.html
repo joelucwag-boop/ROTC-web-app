@@ -1,15 +1,32 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>OML Ranking – Attendance Based</h2>
-<table>
-  <tr><th>MS</th><th>Score</th><th>Present</th><th>FTR</th></tr>
-  {% for cadet in leaderboard %}
-  <tr>
-    <td>{{ cadet.MS }}</td>
-    <td>{{ cadet.Score }}</td>
-    <td>{{ cadet.Present }}</td>
-    <td>{{ cadet.FTR }}</td>
-  </tr>
-  {% endfor %}
-</table>
+<section class="oml-header">
+  <h2>Attendance-Based OML</h2>
+  <p class="muted">MS1–MS2 ranked by most presents. MS3+ ranked by fewest FTR, then most presents.</p>
+</section>
+
+{% for block in leaderboard %}
+<section class="oml-block">
+  <h3>MS{{ block.ms }}</h3>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Cadet</th><th>Present</th><th>FTR</th><th>Excused</th><th>School</th></tr>
+    </thead>
+    <tbody>
+      {% for cadet in block.cadets %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td><a href="{{ url_for('directory.cadet_detail', cadet_id=cadet.slug) }}">{{ cadet.name }}</a></td>
+        <td>{{ cadet.present }}</td>
+        <td>{{ cadet.ftr }}</td>
+        <td>{{ cadet.excused }}</td>
+        <td>{{ cadet.school or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<p class="muted">No attendance data is available for ranking.</p>
+{% endfor %}
 {% endblock %}
