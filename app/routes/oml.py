@@ -24,6 +24,7 @@ def oml():
     except Exception:
         app.logger.exception("Failed to load attendance cache for OML")
         data = {}
+    data = get_cached_data(app, "attendance")
     cadets = data.get("cadets", [])
 
     per_ms = {}

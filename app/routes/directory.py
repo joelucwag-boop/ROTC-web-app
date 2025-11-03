@@ -39,6 +39,8 @@ def directory():
     except Exception:
         app.logger.exception("Failed to load availability cache for directory")
         availability = {}
+    attendance = get_cached_data(app, "attendance")
+    availability = get_cached_data(app, "availability")
 
     cadets_raw = attendance.get("cadets", [])
     ms_levels = attendance.get("ms_levels", [])
@@ -114,6 +116,11 @@ def cadet_detail(cadet_id: str):
     cadet = attendance.get("cadet_index", {}).get(cadet_id)
     if not cadet:
         app.logger.warning("Cadet not found in directory detail", extra={"cadet_id": cadet_id})
+    attendance = get_cached_data(app, "attendance")
+    availability = get_cached_data(app, "availability")
+
+    cadet = attendance.get("cadet_index", {}).get(cadet_id)
+    if not cadet:
         abort(404)
 
     availability_entry = _availability_entry(cadet, availability)

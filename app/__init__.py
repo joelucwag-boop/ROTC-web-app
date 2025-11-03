@@ -8,6 +8,9 @@ import pkgutil
 
 from flask import Blueprint, Flask, redirect, url_for
 
+# app/__init__.py
+import os, logging, pkgutil, importlib, inspect
+from flask import Flask, redirect, url_for
 from .config import Config
 from .utils.logger import init_logging
 from .utils.sheet_cache import init_cache_scheduler
@@ -93,6 +96,34 @@ def create_app() -> Flask:
                 raw_items = list(configured)
             else:
                 raw_items = [
+    @app.context_processor
+    def _inject_nav_links():
+        try:
+            configured = app.config.get("NAVIGATION_ITEMS")
+            if configured:
+                nav_items = []
+                for item in configured:
+                    if isinstance(item, dict):
+                        label = item.get("label")
+                        endpoint = item.get("endpoint")
+                    else:
+                        try:
+                            label, endpoint = item
+                        except Exception:
+                            app.logger.debug(
+                                "Ignoring malformed navigation item",
+                                extra={"item": item},
+                            )
+                            continue
+                    if not label or not endpoint:
+                        app.logger.debug(
+                            "Ignoring incomplete navigation item",
+                            extra={"item": item},
+                        )
+                        continue
+                    nav_items.append((label, endpoint))
+            else:
+                nav_items = [
                     ("Home", "home.index"),
                     ("Writer", "writer.index"),
                     ("Reports", "reports.index"),
@@ -124,6 +155,12 @@ def create_app() -> Flask:
                 if endpoint not in app.view_functions:
                     app.logger.debug(
                         "Navigation endpoint unavailable; skipping", extra={"endpoint": endpoint}
+            available = []
+            for label, endpoint in nav_items:
+                if endpoint not in app.view_functions:
+                    app.logger.debug(
+                        "Navigation endpoint unavailable; skipping",
+                        extra={"endpoint": endpoint},
                     )
                     continue
 
@@ -144,6 +181,70 @@ def create_app() -> Flask:
             return {"nav_links": []}
 
     # Cache scheduler ------------------------------------------------------
+                available.append(
+                    {
+                        "label": label,
+                        "endpoint": endpoint,
+                        "href": href,
+                    }
+                )
+
+            return {"nav_links": available}
+        except Exception:
+            app.logger.exception("Failed to prepare navigation links")
+            return {"nav_links": []}
+        nav_items = [
+            ("Home", "home.index"),
+            ("Writer", "writer.index"),
+            ("Reports", "reports.index"),
+            ("Directory", "directory.index"),
+            ("Availability", "availability.index"),
+            ("OML", "oml.index"),
+            ("Waterfall", "waterfall.index"),
+            ("Admin", "admin.index"),
+        ]
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+                app.logger.debug(
+                    "Navigation endpoint unavailable; skipping",
+                    extra={"endpoint": endpoint},
+                )
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+         main
+                continue
+
+            try:
+                href = url_for(endpoint)
+            except Exception:
+                app.logger.warning(
+                    "Navigation link could not be generated",
+                    extra={"endpoint": endpoint},
+                )
+                continue
+
+            available.append(
+                {
+                    "label": label,
+                    "endpoint": endpoint,
+                    "href": href,
+                }
+            )
+
+            available.append({"label": label, "endpoint": endpoint, "href": href})
+                available.append({"label": label, "endpoint": endpoint})
+            except Exception:
+                app.logger.debug(
+                    "Skipping navigation item due to unresolved endpoint",
+                    extra={"endpoint": endpoint},
+                )
+        return {"nav_links": available}
+
+    # ---- start scheduler once ----
     if not app.config.get("SCHEDULER_STARTED", False):
         try:
             init_cache_scheduler(app)
@@ -154,6 +255,7 @@ def create_app() -> Flask:
     # Minimal error handlers -----------------------------------------------
     @app.errorhandler(404)
     def _handle_404(error):
+    def _404(e):
         return "Not Found", 404
 
     @app.errorhandler(500)
