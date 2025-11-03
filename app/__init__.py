@@ -1,6 +1,6 @@
 # app/__init__.py
 import os, logging, pkgutil, importlib, inspect
-from flask import Flask, redirect
+from flask import Flask, redirect, url_for
 from .config import Config
 from .utils.logger import init_logging
 from .utils.sheet_cache import init_cache_scheduler
@@ -74,6 +74,47 @@ def create_app():
                     app.logger.warning("Failed registering %s.%s: %s", name, attr_name, e)
 
     register_all_blueprints()
+
+    @app.context_processor
+    def _inject_nav_links():
+        nav_items = [
+            ("Home", "home.index"),
+            ("Writer", "writer.index"),
+            ("Reports", "reports.index"),
+            ("Directory", "directory.index"),
+            ("Availability", "availability.index"),
+            ("OML", "oml.index"),
+            ("Waterfall", "waterfall.index"),
+            ("Admin", "admin.index"),
+        ]
+
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+                app.logger.debug(
+                    "Navigation endpoint unavailable; skipping",
+                    extra={"endpoint": endpoint},
+                )
+                continue
+
+            try:
+                href = url_for(endpoint)
+            except Exception:
+                app.logger.warning(
+                    "Navigation link could not be generated",
+                    extra={"endpoint": endpoint},
+                )
+                continue
+
+            available.append(
+                {
+                    "label": label,
+                    "endpoint": endpoint,
+                    "href": href,
+                }
+            )
+
+        return {"nav_links": available}
 
     # ---- start scheduler once ----
     if not app.config.get("SCHEDULER_STARTED", False):
