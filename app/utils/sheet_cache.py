@@ -57,6 +57,18 @@ def _get_timezone(app):
 def _now_tz(app) -> datetime:
     tz = _get_timezone(app)
 
+def _get_timezone(app):
+    tz_name = app.config.get("TZ", "America/Chicago")
+    try:
+        return pytz.timezone(tz_name)
+    except Exception:
+        log.warning("Invalid timezone '%s'; defaulting to UTC", tz_name)
+        return pytz.UTC
+
+
+def _now_tz(app) -> datetime:
+    tz = _get_timezone(app)
+
 
 def _now_tz(app) -> datetime:
     tz_name = app.config.get("TZ", "America/Chicago")
@@ -110,6 +122,10 @@ def _load_attendance(app) -> Dict[str, Any]:
         tab_name=tab_name,
         program_hint=app.config.get("PROGRAM_COLUMN", ""),
     )
+
+
+def _load_availability(app) -> Dict[str, Any]:
+    from ..integrations.google_sheets_attendance import build_availability_cache
 
 
 def _load_availability(app) -> Dict[str, Any]:

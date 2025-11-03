@@ -87,10 +87,15 @@ def create_app():
             ("Waterfall", "waterfall.index"),
             ("Admin", "admin.index"),
         ]
+<<<<<<< codex/build-robust-python-flask-web-app-ydw52j
+
+=======
+>>>>>>> main
         available = []
         for label, endpoint in nav_items:
             if endpoint not in app.view_functions:
                 continue
+
             try:
                 href = url_for(endpoint)
             except Exception:
@@ -99,6 +104,15 @@ def create_app():
                     extra={"endpoint": endpoint},
                 )
                 continue
+
+            available.append(
+                {
+                    "label": label,
+                    "endpoint": endpoint,
+                    "href": href,
+                }
+            )
+
             available.append({"label": label, "endpoint": endpoint, "href": href})
                 available.append({"label": label, "endpoint": endpoint})
             except Exception:
