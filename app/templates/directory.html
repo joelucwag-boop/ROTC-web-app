@@ -1,14 +1,56 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Cadet Directory</h2>
-<table>
-  <tr><th>Name</th><th>MS</th><th>Status</th></tr>
-  {% for name, ms, category in cadets %}
-  <tr>
-    <td>{{ name }}</td>
-    <td>{{ ms }}</td>
-    <td>{{ category }}</td>
-  </tr>
-  {% endfor %}
+<section class="directory-header">
+  <h2>Cadet Directory</h2>
+  <form method="get" class="filters">
+    <input type="text" name="q" placeholder="Search by name or school" value="{{ query }}">
+    <select name="ms">
+      <option value="">All MS Levels</option>
+      {% for ms in ms_levels %}
+      <option value="{{ ms }}" {% if ms_filter == ms %}selected{% endif %}>MS{{ ms }}</option>
+      {% endfor %}
+    </select>
+    <select name="school">
+      <option value="">All Schools</option>
+      {% for school in schools %}
+      <option value="{{ school }}" {% if school_filter == school %}selected{% endif %}>{{ school }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Apply</button>
+    {% if query or ms_filter or school_filter %}
+    <a href="{{ url_for('directory.directory') }}" class="link-button">Clear</a>
+    {% endif %}
+  </form>
+</section>
+
+{% if cadets %}
+<table class="directory">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>MS</th>
+      <th>School</th>
+      <th>Present</th>
+      <th>FTR</th>
+      <th>Excused</th>
+      <th>Availability</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for cadet in cadets %}
+    <tr>
+      <td><a href="{{ url_for('directory.cadet_detail', cadet_id=cadet.id) }}">{{ cadet.name }}</a></td>
+      <td>{{ cadet.ms }}</td>
+      <td>{{ cadet.school or '—' }}</td>
+      <td>{{ cadet.status_counts.get('Present', 0) }}</td>
+      <td>{{ cadet.status_counts.get('FTR', 0) }}</td>
+      <td>{{ cadet.status_counts.get('Excused', 0) }}</td>
+      <td class="availability-flag">{% if cadet.has_availability %}✅{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
+{% else %}
+<p class="muted">No cadets matched your filters.</p>
+{% endif %}
 {% endblock %}
