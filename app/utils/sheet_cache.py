@@ -156,6 +156,11 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
 
     if _should_refresh(app, cache_name):
         app.logger.debug("Cache '%s' is stale; refreshing.", cache_name)
+        if not refresh_cache(app, cache_name):
+            app.logger.error(
+                "Cache '%s' refresh failed; returning empty dataset.", cache_name
+            )
+            return {}
         refresh_cache(app, cache_name)
 
     path = _cache_path(app, cache_name)
@@ -164,6 +169,20 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
             return pickle.load(fh)
     except FileNotFoundError:
         app.logger.warning("Cache %s missing on disk; regenerating.", cache_name)
+        if not refresh_cache(app, cache_name):
+            app.logger.error(
+                "Cache '%s' could not be created; returning empty dataset.", cache_name
+            )
+            return {}
+        try:
+            with open(path, "rb") as fh:
+                return pickle.load(fh)
+        except FileNotFoundError:
+            app.logger.error(
+                "Cache '%s' still missing after refresh; returning empty dataset.",
+                cache_name,
+            )
+            return {}
         refresh_cache(app, cache_name)
         with open(path, "rb") as fh:
             return pickle.load(fh)

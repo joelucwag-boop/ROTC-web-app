@@ -20,6 +20,12 @@ def _chart_label(event: dict) -> str:
 @bp.get("/")
 def index():
     app = current_app
+    app.logger.debug("Rendering dashboard home route")
+    try:
+        data = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for dashboard")
+        data = {}
     data = get_cached_data(app, "attendance")
 
     events = data.get("events", [])
@@ -41,6 +47,14 @@ def index():
         except ValueError:
             generated_at_str = generated_at
 
+    app.logger.debug(
+        "Dashboard data prepared",
+        extra={
+            "events": len(events),
+            "latest_event": latest_event.get("iso") if latest_event else None,
+            "ms_levels": len(ms_levels),
+        },
+    )
     return render_template(
         "home.html",
         latest_event=latest_event,

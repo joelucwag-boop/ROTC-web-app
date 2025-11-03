@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import re
 import sys
@@ -25,6 +26,8 @@ import requests
 from gspread.cell import Cell
 from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
+
+log = logging.getLogger(__name__)
 
 STATUS_KEYS = ("Present", "FTR", "Excused")
 
@@ -48,6 +51,7 @@ ENV_KEY = "GOOGLE_SERVICE_ACCOUNT_JSON"
 
 
 def _client_from_env() -> gspread.Client:
+    log.debug("Initialising Google Sheets client using %s", ENV_KEY)
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -55,11 +59,32 @@ def _client_from_env() -> gspread.Client:
 
     creds_json = os.getenv(ENV_KEY)
     if not creds_json:
+        log.error("Environment variable %s is not configured.", ENV_KEY)
         raise RuntimeError(
             f"Environment variable {ENV_KEY} not found. "
             "Set it to the full JSON payload of your service account key."
         )
 
+    try:
+        info = json.loads(creds_json)
+    except json.JSONDecodeError as exc:
+        log.exception("Failed to parse service account JSON from %s", ENV_KEY)
+        raise RuntimeError("Invalid service account JSON payload.") from exc
+
+    try:
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+    except Exception:
+        log.exception("Failed to build Google credentials from service account info.")
+        raise
+
+    try:
+        client = gspread.authorize(creds)
+    except Exception:
+        log.exception("Failed to authorise Google Sheets client.")
+        raise
+
+    log.debug("Google Sheets client initialised successfully.")
+    return client
     info = json.loads(creds_json)
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     return gspread.authorize(creds)
@@ -72,9 +97,19 @@ class SheetConfig:
 
 
 def _open_ws(cfg: SheetConfig) -> gspread.Worksheet:
-    gc = _client_from_env()
-    sh = gc.open_by_key(cfg.sheet_id)
-    return sh.worksheet(cfg.tab_name)
+    log.debug("Opening worksheet: sheet_id=%s tab_name=%s", cfg.sheet_id, cfg.tab_name)
+    try:
+        gc = _client_from_env()
+        sh = gc.open_by_key(cfg.sheet_id)
+        ws = sh.worksheet(cfg.tab_name)
+    except Exception:
+        log.exception(
+            "Failed to open worksheet", extra={"sheet_id": cfg.sheet_id, "tab_name": cfg.tab_name}
+        )
+        raise
+
+    log.debug("Worksheet opened successfully: %s / %s", cfg.sheet_id, cfg.tab_name)
+    return ws
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +135,11 @@ def _detect_header_row(rows: Iterable[Iterable[str]], max_scan: int = 10) -> int
 
 
 def _sheet_to_df(ws: gspread.Worksheet, return_meta: bool = False):
+    log.debug("Fetching all values for worksheet %s", ws.title)
     rows = ws.get_all_values()
+    log.debug("Worksheet %s returned %d rows", ws.title, len(rows))
     if not rows:
+        log.error("Worksheet %s appears to be empty.", ws.title)
         raise ValueError("Worksheet appears to be empty.")
 
     hdr_idx = _detect_header_row(rows, max_scan=10)
@@ -114,6 +152,12 @@ def _sheet_to_df(ws: gspread.Worksheet, return_meta: bool = False):
         data = [r[: last_nonempty + 1] for r in data]
 
     df = pd.DataFrame(data, columns=header)
+    log.debug(
+        "DataFrame for worksheet %s created with shape %s (header row %d)",
+        ws.title,
+        df.shape,
+        hdr_idx,
+    )
     if return_meta:
         return df, hdr_idx, last_nonempty + 1
     return df
@@ -297,6 +341,24 @@ def _tokenise(text: str) -> List[str]:
 
 
 def build_attendance_cache(sheet_id: str, tab_name: str, program_hint: str = "") -> Dict[str, Any]:
+    log.info("Building attendance cache", extra={"sheet_id": sheet_id, "tab_name": tab_name})
+    try:
+        result = _build_attendance_cache_core(sheet_id, tab_name, program_hint)
+    except Exception:
+        log.exception(
+            "Failed to build attendance cache", extra={"sheet_id": sheet_id, "tab_name": tab_name}
+        )
+        raise
+
+    log.info(
+        "Attendance cache built: %d cadets, %d events",
+        len(result.get("cadets", [])),
+        len(result.get("events", [])),
+    )
+    return result
+
+
+def _build_attendance_cache_core(sheet_id: str, tab_name: str, program_hint: str) -> Dict[str, Any]:
     ws = _open_ws(SheetConfig(sheet_id, tab_name))
     df, header_idx, last_col = _sheet_to_df(ws, return_meta=True)
 
@@ -489,6 +551,28 @@ def build_attendance_cache(sheet_id: str, tab_name: str, program_hint: str = "")
 
 
 def build_availability_cache(csv_url: str, name_column_override: str = "") -> Dict[str, Any]:
+    log.info("Building availability cache", extra={"csv_url": csv_url})
+    try:
+        result = _build_availability_cache_core(csv_url, name_column_override)
+    except Exception:
+        log.exception("Failed to build availability cache", extra={"csv_url": csv_url})
+        raise
+
+    log.info(
+        "Availability cache built with %d entries", len(result.get("entries", []))
+    )
+    return result
+
+
+def _build_availability_cache_core(csv_url: str, name_column_override: str) -> Dict[str, Any]:
+    response = requests.get(csv_url, timeout=30)
+    log.debug(
+        "Availability CSV response: status=%s bytes=%d", response.status_code, len(response.content)
+    )
+    response.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
+    log.debug("Availability CSV parsed with shape %s", df.shape)
     response = requests.get(csv_url, timeout=30)
     response.raise_for_status()
 
@@ -497,6 +581,7 @@ def build_availability_cache(csv_url: str, name_column_override: str = "") -> Di
 
     if name_column_override and name_column_override in df.columns:
         name_column = name_column_override
+        log.debug("Using override name column: %s", name_column)
     else:
         candidates = [
             "full name",
@@ -512,6 +597,7 @@ def build_availability_cache(csv_url: str, name_column_override: str = "") -> Di
             for col, nm in norm_map.items():
                 if nm == norm_cand:
                     name_column = col
+                    log.debug("Detected name column: %s", name_column)
                     break
             if name_column:
                 break
@@ -588,6 +674,22 @@ def build_availability_cache(csv_url: str, name_column_override: str = "") -> Di
 
 
 def build_umr_cache(sheet_id: str, tab_name: str, mapping_json: str = "") -> Dict[str, Any]:
+    log.info(
+        "Building UMR cache", extra={"sheet_id": sheet_id, "tab_name": tab_name, "mapping_configured": bool(mapping_json)}
+    )
+    try:
+        result = _build_umr_cache_core(sheet_id, tab_name, mapping_json)
+    except Exception:
+        log.exception(
+            "Failed to build UMR cache", extra={"sheet_id": sheet_id, "tab_name": tab_name}
+        )
+        raise
+
+    log.info("UMR cache built with %d entries", len(result.get("entries", [])))
+    return result
+
+
+def _build_umr_cache_core(sheet_id: str, tab_name: str, mapping_json: str) -> Dict[str, Any]:
     ws = _open_ws(SheetConfig(sheet_id, tab_name))
     entries: List[Dict[str, Any]] = []
 
@@ -595,6 +697,7 @@ def build_umr_cache(sheet_id: str, tab_name: str, mapping_json: str = "") -> Dic
         try:
             mapping = json.loads(mapping_json)
         except json.JSONDecodeError as exc:
+            log.exception("Invalid JSON provided for UMR mapping.")
             raise ValueError("UMR_MAPPING_JSON is not valid JSON") from exc
 
         if not isinstance(mapping, list):
@@ -625,6 +728,7 @@ def build_umr_cache(sheet_id: str, tab_name: str, mapping_json: str = "") -> Dic
             )
     else:
         rows = ws.get_all_values()
+        log.debug("UMR worksheet returned %d rows", len(rows))
         for i, row in enumerate(rows, start=1):
             if len(row) < 2:
                 continue
@@ -683,6 +787,12 @@ def ensure_date_column(
                 ws.update_cell(header_row, col_info["column_index"], new_header)
                 col_info["header"] = new_header
                 col_info["event"] = event_label
+                log.debug(
+                    "Updated existing header for %s with event %s at column %d",
+                    target_iso,
+                    event_label,
+                    col_info["column_index"],
+                )
             return col_info["column_index"], date_columns
 
     new_col_index = last_column_index + 1
@@ -690,6 +800,9 @@ def ensure_date_column(
     if event_label:
         header_text += f" + {event_label}" if "+" not in event_label else f" {event_label}"
     ws.update_cell(header_row, new_col_index, header_text)
+    log.debug(
+        "Added new attendance column %d with header '%s'", new_col_index, header_text
+    )
     date_columns.append(
         {
             "header": header_text,
@@ -716,6 +829,66 @@ def write_attendance_entries(
     color_excused: str,
 ):
     if not updates:
+        log.info(
+            "No attendance updates received for %s (event=%s)", target_iso, event_label or ""
+        )
+        return {"updated": 0}
+
+    log.info(
+        "Writing %d attendance updates", len(updates), extra={"target_iso": target_iso, "event_label": event_label}
+    )
+    try:
+        ws = _open_ws(SheetConfig(sheet_id, tab_name))
+        column_index, updated_columns = ensure_date_column(
+            ws, header_row, date_columns, target_iso, event_label, last_column_index
+        )
+
+        value_cells = []
+        format_requests = []
+
+        color_map = {
+            "Present": _hex_to_rgb(color_present),
+            "FTR": _hex_to_rgb(color_ftr),
+            "Excused": _hex_to_rgb(color_excused),
+        }
+
+        for payload in updates:
+            row_number = payload["sheet_row"]
+            status = payload["status"]
+            if not status:
+                continue
+            value = status
+            note = payload.get("note", "").strip()
+            if status == "Excused" and note:
+                value = f"Excused - {note}" if not status.lower().startswith("excused") else f"{status} - {note}"
+
+            a1 = rowcol_to_a1(row_number, column_index)
+            value_cells.append(Cell(row_number, column_index, value))
+            if status in color_map:
+                format_requests.append(
+                    {
+                        "range": a1,
+                        "format": {"userEnteredFormat": {"backgroundColor": color_map[status]}},
+                    }
+                )
+
+        if value_cells:
+            ws.update_cells(value_cells, value_input_option="USER_ENTERED")
+            log.debug("Updated %d cells in column %d", len(value_cells), column_index)
+
+        for request in format_requests:
+            ws.format(request["range"], request["format"])
+
+        log.info(
+            "Successfully wrote %d attendance updates", len(value_cells), extra={"column_index": column_index}
+        )
+        return {"updated": len(value_cells), "column_index": column_index, "date_columns": updated_columns}
+    except Exception:
+        log.exception(
+            "Failed to write attendance entries",
+            extra={"sheet_id": sheet_id, "tab_name": tab_name, "target_iso": target_iso},
+        )
+        raise
         return {"updated": 0}
 
     ws = _open_ws(SheetConfig(sheet_id, tab_name))
@@ -765,6 +938,15 @@ def write_attendance_entries(
 
 
 def get_attendance_by_date(sheet_id, tab_name, target_date, ms_level) -> Dict[str, List[str]]:
+    log.debug(
+        "Fetching attendance by date",
+        extra={
+            "sheet_id": sheet_id,
+            "tab_name": tab_name,
+            "target_date": target_date,
+            "ms_level": ms_level,
+        },
+    )
     cfg = SheetConfig(sheet_id=sheet_id, tab_name=tab_name)
     ws = _open_ws(cfg)
     df = _sheet_to_df(ws)
@@ -818,10 +1000,30 @@ def get_attendance_by_date(sheet_id, tab_name, target_date, ms_level) -> Dict[st
         if status:
             name = _normalize_name(str(row.get(first_col, "")), str(row.get(last_col, "")))
             out[status].append(name)
+    log.debug(
+        "Attendance by date fetched",
+        extra={
+            "target_date": target_date,
+            "ms_level": ms_level,
+            "present": len(out.get("Present", [])),
+            "ftr": len(out.get("FTR", [])),
+            "excused": len(out.get("Excused", [])),
+        },
+    )
     return out
 
 
 def get_cadet_record(sheet_id, tab_name, first_name=None, last_name=None, full_name=None) -> pd.Series:
+    log.debug(
+        "Fetching cadet record",
+        extra={
+            "sheet_id": sheet_id,
+            "tab_name": tab_name,
+            "first_name": first_name,
+            "last_name": last_name,
+            "full_name": full_name,
+        },
+    )
     if full_name and full_name.strip():
         if " " in full_name.strip():
             target_first, target_last = [p.strip() for p in full_name.split(" ", 1)]
@@ -854,10 +1056,25 @@ def get_cadet_record(sheet_id, tab_name, first_name=None, last_name=None, full_n
     match = df[df["_full"] == target_full]
     if match.empty:
         raise ValueError(f"Cadet '{target_full}' not found.")
-    return match.iloc[0][date_cols]
+    result = match.iloc[0][date_cols]
+    log.debug(
+        "Cadet record retrieved",
+        extra={"cadet": target_full, "columns": len(date_cols)},
+    )
+    return result
 
 
 def daily_report(sheet_id, tab_name, target_date, ms_levels=("1", "2", "3", "4", "5"), include_name_lists=False):
+    log.debug(
+        "Generating daily report",
+        extra={
+            "sheet_id": sheet_id,
+            "tab_name": tab_name,
+            "target_date": target_date,
+            "ms_levels": ms_levels,
+            "include_names": include_name_lists,
+        },
+    )
     ms_levels = [str(x).strip() for x in ms_levels]
     rows, names_by_ms = [], {}
     total_present = total_ftr = total_excused = 0
@@ -882,6 +1099,15 @@ def daily_report(sheet_id, tab_name, target_date, ms_levels=("1", "2", "3", "4",
     result = {"table": rows, "overall": overall}
     if include_name_lists:
         result["names_by_ms"] = names_by_ms
+    log.debug(
+        "Daily report generated",
+        extra={
+            "target_date": target_date,
+            "overall_present": overall["Present"],
+            "overall_ftr": overall["FTR"],
+            "overall_excused": overall["Excused"],
+        },
+    )
     return result
 
 

@@ -41,6 +41,9 @@ def _require_password():
         return None
     if request.endpoint == "writer.login":
         return None
+    current_app.logger.debug(
+        "Redirecting to writer login", extra={"next": request.url}
+    )
     return redirect(url_for("writer.login", next=request.url))
 
 
@@ -55,6 +58,14 @@ def login():
         provided = request.form.get("password", "")
         if secrets.compare_digest(provided, password):
             session[SESSION_KEY] = True
+            current_app.logger.info(
+                "Writer login succeeded", extra={"remote_addr": request.remote_addr}
+            )
+            return redirect(request.args.get("next") or url_for("writer.index"))
+        error = "Incorrect password."
+        current_app.logger.warning(
+            "Writer login failed", extra={"remote_addr": request.remote_addr}
+        )
             return redirect(request.args.get("next") or url_for("writer.index"))
         error = "Incorrect password."
 
@@ -78,6 +89,12 @@ def _group_cadets(cadets: list[dict]) -> dict[str, list[dict]]:
 @bp.route("/", methods=["GET", "POST"])
 def index():
     app = current_app
+    app.logger.debug("Writer interface accessed", extra={"method": request.method})
+    try:
+        attendance_data = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for writer")
+        attendance_data = {}
     attendance_data = get_cached_data(app, "attendance")
     cadets = attendance_data.get("cadets", [])
     cadet_map = {c["id"]: c for c in cadets}
@@ -92,6 +109,7 @@ def index():
     if request.method == "POST":
         if not app.config.get("ENABLE_WRITES", False):
             message = "Writes are disabled. Set ENABLE_WRITES=true to allow updates."
+            app.logger.warning("Writer submission blocked because writes are disabled.")
         else:
             target_date = request.form.get("date") or date.today().isoformat()
             preset = request.form.get("event_preset", "")
@@ -122,11 +140,44 @@ def index():
 
             if not updates:
                 message = "No cadets were selected for update."
+                app.logger.info("Writer submission ignored: no cadets selected.")
             else:
                 sheet_id = app.config.get("SPREADSHEET_ID")
                 tab_name = app.config.get("WORKSHEET_NAME", "Attendance Roster")
                 if not sheet_id:
                     message = "SPREADSHEET_ID is not configured."
+                    app.logger.error("Writer submission failed: SPREADSHEET_ID missing.")
+                else:
+                    try:
+                        result = write_attendance_entries(
+                            sheet_id=sheet_id,
+                            tab_name=tab_name,
+                            header_row=attendance_data.get("header_row", 1),
+                            date_columns=copy.deepcopy(attendance_data.get("date_columns", [])),
+                            last_column_index=attendance_data.get("last_column_index", 1),
+                            target_iso=target_date,
+                            event_label=event_label,
+                            updates=updates,
+                            color_present=app.config.get("ATT_COLOR_PRESENT", "#00ff00"),
+                            color_ftr=app.config.get("ATT_COLOR_FTR", "#ff0000"),
+                            color_excused=app.config.get("ATT_COLOR_EXCUSED", "#ffff00"),
+                        )
+                        app.logger.info(
+                            "Writer submission applied",
+                            extra={
+                                "target_date": target_date,
+                                "event_label": event_label,
+                                "updated": result.get("updated"),
+                            },
+                        )
+                        refresh_cache(app, "attendance")
+                        message = f"Updated {result.get('updated', 0)} cells for {target_date}."
+                    except Exception:
+                        app.logger.exception(
+                            "Writer submission failed",
+                            extra={"target_date": target_date, "event_label": event_label},
+                        )
+                        message = "Failed to write attendance. Check logs for details."
                 else:
                     result = write_attendance_entries(
                         sheet_id=sheet_id,
@@ -152,6 +203,14 @@ def index():
                     if status_summary.get(status)
                 }
 
+    app.logger.debug(
+        "Writer page prepared",
+        extra={
+            "selected_group": selected_group,
+            "cadet_count": len(selected_cadets),
+            "message": message,
+        },
+    )
     return render_template(
         "writer.html",
         cadets=selected_cadets,

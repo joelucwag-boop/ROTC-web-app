@@ -72,6 +72,15 @@ def login():
         provided = request.form.get("password", "")
         if secrets.compare_digest(provided, password):
             session[SESSION_KEY] = True
+            current_app.logger.info(
+                "Availability login succeeded", extra={"remote_addr": request.remote_addr}
+            )
+            next_url = request.args.get("next") or url_for("availability.availability")
+            return redirect(next_url)
+        error = "Incorrect password."
+        current_app.logger.warning(
+            "Availability login failed", extra={"remote_addr": request.remote_addr}
+        )
             next_url = request.args.get("next") or url_for("availability.availability")
             return redirect(next_url)
         error = "Incorrect password."
@@ -102,6 +111,17 @@ def _build_time_suggestions(availability_data: dict) -> list[str]:
 @bp.route("/", methods=["GET", "POST"])
 def availability():
     app = current_app
+    app.logger.debug("Availability checker accessed")
+    try:
+        attendance_data = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for availability")
+        attendance_data = {}
+    try:
+        availability_data = get_cached_data(app, "availability")
+    except Exception:
+        app.logger.exception("Failed to load availability cache for availability")
+        availability_data = {}
     attendance_data = get_cached_data(app, "attendance")
     availability_data = get_cached_data(app, "availability")
 
@@ -159,6 +179,14 @@ def availability():
             selected_time,
             len(results),
         )
+    app.logger.debug(
+        "Availability page prepared",
+        extra={
+            "day_options": len(day_options),
+            "time_suggestions": len(time_suggestions),
+            "has_results": bool(results),
+        },
+    )
 
     return render_template(
         "availability.html",

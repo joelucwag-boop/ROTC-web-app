@@ -8,6 +8,12 @@ bp = Blueprint("waterfall", __name__, url_prefix="/waterfall")
 @bp.route("/")
 def waterfall():
     app = current_app
+    app.logger.debug("Waterfall matrix requested")
+    try:
+        data = get_cached_data(app, "umr")
+    except Exception:
+        app.logger.exception("Failed to load UMR cache for waterfall matrix")
+        data = {}
     data = get_cached_data(app, "umr")
     matrix = data.get("entries", [])
     app.logger.debug("Waterfall matrix loaded with %d entries", len(matrix))

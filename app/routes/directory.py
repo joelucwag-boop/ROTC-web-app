@@ -21,6 +21,24 @@ def _availability_entry(cadet: dict, availability: dict) -> dict | None:
 @bp.route("/")
 def directory():
     app = current_app
+    app.logger.debug(
+        "Directory listing requested",
+        extra={
+            "query": request.args.get("q"),
+            "ms": request.args.get("ms"),
+            "school": request.args.get("school"),
+        },
+    )
+    try:
+        attendance = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for directory")
+        attendance = {}
+    try:
+        availability = get_cached_data(app, "availability")
+    except Exception:
+        app.logger.exception("Failed to load availability cache for directory")
+        availability = {}
     attendance = get_cached_data(app, "attendance")
     availability = get_cached_data(app, "availability")
 
@@ -60,6 +78,15 @@ def directory():
 
     filtered.sort(key=lambda item: (item["name"].split(" ")[-1].lower(), item["name"].split(" ")[0].lower()))
 
+    app.logger.debug(
+        "Directory filtered",
+        extra={
+            "total_cadets": len(cadets_raw),
+            "filtered": len(filtered),
+            "ms_levels": len(ms_levels),
+            "schools": len(schools),
+        },
+    )
     return render_template(
         "directory.html",
         cadets=filtered,
@@ -74,6 +101,21 @@ def directory():
 @bp.route("/<cadet_id>")
 def cadet_detail(cadet_id: str):
     app = current_app
+    app.logger.debug("Directory detail requested", extra={"cadet_id": cadet_id})
+    try:
+        attendance = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for cadet detail")
+        attendance = {}
+    try:
+        availability = get_cached_data(app, "availability")
+    except Exception:
+        app.logger.exception("Failed to load availability cache for cadet detail")
+        availability = {}
+
+    cadet = attendance.get("cadet_index", {}).get(cadet_id)
+    if not cadet:
+        app.logger.warning("Cadet not found in directory detail", extra={"cadet_id": cadet_id})
     attendance = get_cached_data(app, "attendance")
     availability = get_cached_data(app, "availability")
 
@@ -82,6 +124,14 @@ def cadet_detail(cadet_id: str):
         abort(404)
 
     availability_entry = _availability_entry(cadet, availability)
+
+    app.logger.debug(
+        "Rendering cadet detail",
+        extra={
+            "cadet_id": cadet_id,
+            "has_availability": bool(availability_entry),
+        },
+    )
 
     return render_template(
         "directory_detail.html",

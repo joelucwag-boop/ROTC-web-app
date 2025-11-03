@@ -8,6 +8,14 @@ bp = Blueprint("reports", __name__, url_prefix="/reports")
 @bp.route("/")
 def reports():
     app = current_app
+    app.logger.debug(
+        "Reports view requested", extra={"date": request.args.get("date")}
+    )
+    try:
+        data = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for reports")
+        data = {}
     data = get_cached_data(app, "attendance")
 
     events = list(reversed(data.get("events", [])))  # newest first
@@ -29,6 +37,14 @@ def reports():
                 ms = str(cadet.get("ms", ""))
                 bucket = names_by_ms.setdefault(ms, {"Present": [], "FTR": [], "Excused": []})
                 bucket.setdefault(status, []).append(cadet)
+
+    app.logger.debug(
+        "Reports data prepared",
+        extra={
+            "events": len(events),
+            "selected_iso": selected_event.get("iso") if selected_event else None,
+        },
+    )
 
     return render_template(
         "reports.html",

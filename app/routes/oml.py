@@ -18,6 +18,12 @@ def _sort_key(ms: str, entry: dict) -> tuple:
 @bp.route("/")
 def oml():
     app = current_app
+    app.logger.debug("OML leaderboard requested")
+    try:
+        data = get_cached_data(app, "attendance")
+    except Exception:
+        app.logger.exception("Failed to load attendance cache for OML")
+        data = {}
     data = get_cached_data(app, "attendance")
     cadets = data.get("cadets", [])
 
@@ -44,5 +50,13 @@ def oml():
         leaderboard.append({"ms": ms, "cadets": sorted_list})
 
     leaderboard.sort(key=lambda item: item["ms"])
+
+    app.logger.debug(
+        "OML leaderboard prepared",
+        extra={
+            "levels": len(leaderboard),
+            "total_cadets": len(cadets),
+        },
+    )
 
     return render_template("oml.html", leaderboard=leaderboard)
