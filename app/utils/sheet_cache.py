@@ -161,6 +161,7 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
                 "Cache '%s' refresh failed; returning empty dataset.", cache_name
             )
             return {}
+        refresh_cache(app, cache_name)
 
     path = _cache_path(app, cache_name)
     try:
@@ -182,6 +183,9 @@ def get_cached_data(app, cache_name: str = "attendance") -> Dict[str, Any]:
                 cache_name,
             )
             return {}
+        refresh_cache(app, cache_name)
+        with open(path, "rb") as fh:
+            return pickle.load(fh)
     except Exception:
         app.logger.exception("Error reading cache %s; returning empty dict", cache_name)
         return {}

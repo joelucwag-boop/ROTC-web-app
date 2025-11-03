@@ -85,6 +85,9 @@ def _client_from_env() -> gspread.Client:
 
     log.debug("Google Sheets client initialised successfully.")
     return client
+    info = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    return gspread.authorize(creds)
 
 
 @dataclass
@@ -570,6 +573,10 @@ def _build_availability_cache_core(csv_url: str, name_column_override: str) -> D
 
     df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     log.debug("Availability CSV parsed with shape %s", df.shape)
+    response = requests.get(csv_url, timeout=30)
+    response.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(response.text), dtype=str, keep_default_na=False)
     name_column = ""
 
     if name_column_override and name_column_override in df.columns:
@@ -882,6 +889,47 @@ def write_attendance_entries(
             extra={"sheet_id": sheet_id, "tab_name": tab_name, "target_iso": target_iso},
         )
         raise
+        return {"updated": 0}
+
+    ws = _open_ws(SheetConfig(sheet_id, tab_name))
+    column_index, updated_columns = ensure_date_column(ws, header_row, date_columns, target_iso, event_label, last_column_index)
+
+    value_cells = []
+    format_requests = []
+
+    color_map = {
+        "Present": _hex_to_rgb(color_present),
+        "FTR": _hex_to_rgb(color_ftr),
+        "Excused": _hex_to_rgb(color_excused),
+    }
+
+    for payload in updates:
+        row_number = payload["sheet_row"]
+        status = payload["status"]
+        if not status:
+            continue
+        value = status
+        note = payload.get("note", "").strip()
+        if status == "Excused" and note:
+            value = f"Excused - {note}" if not status.lower().startswith("excused") else f"{status} - {note}"
+
+        a1 = rowcol_to_a1(row_number, column_index)
+        value_cells.append(Cell(row_number, column_index, value))
+        if status in color_map:
+            format_requests.append(
+                {
+                    "range": a1,
+                    "format": {"userEnteredFormat": {"backgroundColor": color_map[status]}},
+                }
+            )
+
+    if value_cells:
+        ws.update_cells(value_cells, value_input_option="USER_ENTERED")
+
+    for request in format_requests:
+        ws.format(request["range"], request["format"])
+
+    return {"updated": len(value_cells), "column_index": column_index, "date_columns": updated_columns}
 
 
 # ---------------------------------------------------------------------------
