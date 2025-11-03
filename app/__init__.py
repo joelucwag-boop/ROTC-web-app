@@ -77,6 +77,72 @@ def create_app():
 
     @app.context_processor
     def _inject_nav_links():
+        try:
+            configured = app.config.get("NAVIGATION_ITEMS")
+            if configured:
+                nav_items = []
+                for item in configured:
+                    if isinstance(item, dict):
+                        label = item.get("label")
+                        endpoint = item.get("endpoint")
+                    else:
+                        try:
+                            label, endpoint = item
+                        except Exception:
+                            app.logger.debug(
+                                "Ignoring malformed navigation item",
+                                extra={"item": item},
+                            )
+                            continue
+                    if not label or not endpoint:
+                        app.logger.debug(
+                            "Ignoring incomplete navigation item",
+                            extra={"item": item},
+                        )
+                        continue
+                    nav_items.append((label, endpoint))
+            else:
+                nav_items = [
+                    ("Home", "home.index"),
+                    ("Writer", "writer.index"),
+                    ("Reports", "reports.index"),
+                    ("Directory", "directory.index"),
+                    ("Availability", "availability.index"),
+                    ("OML", "oml.index"),
+                    ("Waterfall", "waterfall.index"),
+                    ("Admin", "admin.index"),
+                ]
+
+            available = []
+            for label, endpoint in nav_items:
+                if endpoint not in app.view_functions:
+                    app.logger.debug(
+                        "Navigation endpoint unavailable; skipping",
+                        extra={"endpoint": endpoint},
+                    )
+                    continue
+
+                try:
+                    href = url_for(endpoint)
+                except Exception as exc:
+                    app.logger.warning(
+                        "Navigation link could not be generated",
+                        extra={"endpoint": endpoint, "error": str(exc)},
+                    )
+                    continue
+
+                available.append(
+                    {
+                        "label": label,
+                        "endpoint": endpoint,
+                        "href": href,
+                    }
+                )
+
+            return {"nav_links": available}
+        except Exception:
+            app.logger.exception("Failed to prepare navigation links")
+            return {"nav_links": []}
         nav_items = [
             ("Home", "home.index"),
             ("Writer", "writer.index"),
@@ -138,7 +204,8 @@ def create_app():
 
     # minimal error handlers
     @app.errorhandler(404)
-    def _404(e): return "Not Found", 404
+    def _404(e):
+        return "Not Found", 404
 
     @app.errorhandler(500)
     def _500(e):

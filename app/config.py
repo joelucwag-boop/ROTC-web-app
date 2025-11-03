@@ -39,6 +39,16 @@ class Config:
 
     # --- Misc ---
     DEBUG = os.getenv("FLASK_DEBUG", "False").lower() == "true"
+    NAVIGATION_ITEMS = (
+        {"label": "Home", "endpoint": "home.index"},
+        {"label": "Writer", "endpoint": "writer.index"},
+        {"label": "Reports", "endpoint": "reports.index"},
+        {"label": "Directory", "endpoint": "directory.index"},
+        {"label": "Availability", "endpoint": "availability.index"},
+        {"label": "OML", "endpoint": "oml.index"},
+        {"label": "Waterfall", "endpoint": "waterfall.index"},
+        {"label": "Admin", "endpoint": "admin.index"},
+    )
 
     @staticmethod
     def refresh_time():

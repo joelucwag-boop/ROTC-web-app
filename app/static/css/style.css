@@ -3,6 +3,7 @@ header { background:#20232a; color:#fff; padding:1rem; }
 header h1 { margin:0 0 .5rem 0; }
 nav a { color:#61dafb; margin-right:1rem; text-decoration:none; }
 nav a:hover { text-decoration:underline; }
+.nav-empty { color:#bbb; font-size:.9rem; }
 main { padding:1rem 2rem; }
 footer { text-align:center; font-size:.9rem; color:#666; margin-top:2rem; }
 table { border-collapse:collapse; width:100%; background:#fff; margin-top:1rem; }

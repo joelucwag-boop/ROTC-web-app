@@ -9,8 +9,14 @@
 <body>
   <header>
     <h1>GSU Attendance Dashboard</h1>
-<!-- app/templates/base.html (example) -->
       <nav>
+        {% if nav_links %}
+          {% for link in nav_links %}
+            <a href="{{ link.href }}">{{ link.label }}</a>
+          {% endfor %}
+        {% else %}
+          <span class="nav-empty">Navigation unavailable</span>
+        {% endif %}
         {% for link in nav_links %}
           <a href="{{ link.href }}">{{ link.label }}</a>
           <a href="{{ url_for(link.endpoint) }}">{{ link.label }}</a>
