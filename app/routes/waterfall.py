@@ -14,6 +14,7 @@ def waterfall():
     except Exception:
         app.logger.exception("Failed to load UMR cache for waterfall matrix")
         data = {}
+    data = get_cached_data(app, "umr")
     matrix = data.get("entries", [])
     app.logger.debug("Waterfall matrix loaded with %d entries", len(matrix))
     return render_template("waterfall.html", matrix=matrix)

@@ -81,6 +81,9 @@ def login():
         current_app.logger.warning(
             "Availability login failed", extra={"remote_addr": request.remote_addr}
         )
+            next_url = request.args.get("next") or url_for("availability.availability")
+            return redirect(next_url)
+        error = "Incorrect password."
     return render_template("password_prompt.html", error=error, title="Availability Checker Access")
 
 
@@ -119,6 +122,8 @@ def availability():
     except Exception:
         app.logger.exception("Failed to load availability cache for availability")
         availability_data = {}
+    attendance_data = get_cached_data(app, "attendance")
+    availability_data = get_cached_data(app, "availability")
 
     day_options = _build_day_options(availability_data)
     time_suggestions = _build_time_suggestions(availability_data)

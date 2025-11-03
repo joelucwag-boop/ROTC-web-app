@@ -66,6 +66,8 @@ def login():
         current_app.logger.warning(
             "Writer login failed", extra={"remote_addr": request.remote_addr}
         )
+            return redirect(request.args.get("next") or url_for("writer.index"))
+        error = "Incorrect password."
 
     return render_template("password_prompt.html", title="Attendance Writer", error=error)
 
@@ -93,6 +95,7 @@ def index():
     except Exception:
         app.logger.exception("Failed to load attendance cache for writer")
         attendance_data = {}
+    attendance_data = get_cached_data(app, "attendance")
     cadets = attendance_data.get("cadets", [])
     cadet_map = {c["id"]: c for c in cadets}
     groups = _group_cadets(cadets)
@@ -175,6 +178,23 @@ def index():
                             extra={"target_date": target_date, "event_label": event_label},
                         )
                         message = "Failed to write attendance. Check logs for details."
+                else:
+                    result = write_attendance_entries(
+                        sheet_id=sheet_id,
+                        tab_name=tab_name,
+                        header_row=attendance_data.get("header_row", 1),
+                        date_columns=copy.deepcopy(attendance_data.get("date_columns", [])),
+                        last_column_index=attendance_data.get("last_column_index", 1),
+                        target_iso=target_date,
+                        event_label=event_label,
+                        updates=updates,
+                        color_present=app.config.get("ATT_COLOR_PRESENT", "#00ff00"),
+                        color_ftr=app.config.get("ATT_COLOR_FTR", "#ff0000"),
+                        color_excused=app.config.get("ATT_COLOR_EXCUSED", "#ffff00"),
+                    )
+
+                    refresh_cache(app, "attendance")
+                    message = f"Updated {result.get('updated', 0)} cells for {target_date}."
 
             if status_summary:
                 status_summary = {
