@@ -75,6 +75,31 @@ def create_app():
 
     register_all_blueprints()
 
+    @app.context_processor
+    def _inject_nav_links():
+        nav_items = [
+            ("Home", "home.index"),
+            ("Writer", "writer.index"),
+            ("Reports", "reports.index"),
+            ("Directory", "directory.index"),
+            ("Availability", "availability.index"),
+            ("OML", "oml.index"),
+            ("Waterfall", "waterfall.index"),
+            ("Admin", "admin.index"),
+        ]
+        available = []
+        for label, endpoint in nav_items:
+            if endpoint not in app.view_functions:
+                continue
+            try:
+                available.append({"label": label, "endpoint": endpoint})
+            except Exception:
+                app.logger.debug(
+                    "Skipping navigation item due to unresolved endpoint",
+                    extra={"endpoint": endpoint},
+                )
+        return {"nav_links": available}
+
     # ---- start scheduler once ----
     if not app.config.get("SCHEDULER_STARTED", False):
         try:

@@ -134,6 +134,30 @@ def _detect_header_row(rows: Iterable[Iterable[str]], max_scan: int = 10) -> int
     return 0
 
 
+
+
+# ---------------------------------------------------------------------------
+# DataFrame helpers (ported from the original scripts)
+# ---------------------------------------------------------------------------
+
+
+def _detect_header_row(rows: Iterable[Iterable[str]], max_scan: int = 10) -> int:
+    def norm(s):
+        return re.sub(r"[^a-z0-9]+", "", (s or "").strip().lower())
+
+    for i in range(min(max_scan, len(rows))):
+        r = list(rows[i])
+        if not r:
+            continue
+        norms = [norm(c) for c in r]
+        has_nameish = any(k in norms for k in ["namefirst", "firstname", "first", "namelast", "lastname", "last"])
+        has_msish = any(k in norms for k in ["mslevel", "ms", "mslvl", "msyear", "msclass", "mscohort"])
+        nonempty = sum(1 for c in r if (c or "").strip() != "")
+        if (has_nameish or has_msish) and nonempty >= 3:
+            return i
+    return 0
+
+
 def _sheet_to_df(ws: gspread.Worksheet, return_meta: bool = False):
     log.debug("Fetching all values for worksheet %s", ws.title)
     rows = ws.get_all_values()
