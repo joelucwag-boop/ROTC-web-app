@@ -16,6 +16,11 @@ class Config:
     GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     AVAILABILITY_CSV_URL = os.getenv("AVAILABILITY_CSV_URL", "")
     UMR_TAB_NAME = os.getenv("UMR_TAB_NAME", "UMR")
+    PROGRAM_COLUMN = os.getenv("PROGRAM_COLUMN", "")
+    AVAILABILITY_NAME_COLUMN = os.getenv("AVAILABILITY_NAME_COLUMN", "")
+    AVAILABILITY_PASSWORD = os.getenv("AVAILABILITY_PASSWORD", "")
+    WRITER_PASSWORD = os.getenv("WRITER_PASSWORD", "")
+    UMR_MAPPING_JSON = os.getenv("UMR_MAPPING_JSON", "")
 
     # --- Access / Auth ---
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -34,6 +39,16 @@ class Config:
 
     # --- Misc ---
     DEBUG = os.getenv("FLASK_DEBUG", "False").lower() == "true"
+    NAVIGATION_ITEMS = (
+        {"label": "Home", "endpoint": "home.index"},
+        {"label": "Writer", "endpoint": "writer.index"},
+        {"label": "Reports", "endpoint": "reports.index"},
+        {"label": "Directory", "endpoint": "directory.index"},
+        {"label": "Availability", "endpoint": "availability.index"},
+        {"label": "OML", "endpoint": "oml.index"},
+        {"label": "Waterfall", "endpoint": "waterfall.index"},
+        {"label": "Admin", "endpoint": "admin.index"},
+    )
 
     @staticmethod
     def refresh_time():

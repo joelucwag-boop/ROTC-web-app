@@ -3,9 +3,58 @@ header { background:#20232a; color:#fff; padding:1rem; }
 header h1 { margin:0 0 .5rem 0; }
 nav a { color:#61dafb; margin-right:1rem; text-decoration:none; }
 nav a:hover { text-decoration:underline; }
+.nav-empty { color:#bbb; font-size:.9rem; }
 main { padding:1rem 2rem; }
 footer { text-align:center; font-size:.9rem; color:#666; margin-top:2rem; }
 table { border-collapse:collapse; width:100%; background:#fff; margin-top:1rem; }
 th, td { border:1px solid #ccc; padding:.5rem .75rem; text-align:left; }
 th { background:#eee; }
 .slider-container { margin-top:1rem; }
+.muted { color:#555; font-size:.9rem; }
+.warning { background:#fff4d8; border-left:4px solid #f0a202; padding:.5rem .75rem; margin-bottom:1rem; }
+.success { background:#e6f6ea; border-left:4px solid #2d8659; padding:.5rem .75rem; margin:.75rem 0; }
+.error { color:#c62828; }
+.link-button { display:inline-block; margin-left:.75rem; text-decoration:none; color:#1d4ed8; }
+.directory-header, .availability-header, .writer-header, .reports-header, .waterfall-header { margin-bottom:1rem; }
+.filters, .availability-form, .writer-controls, .group-selector { display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; margin-bottom:1rem; }
+.filters input[type="text"], .availability-form input[type="text"], select, input[type="date"], input[type="password"], .writer-form input[type="text"] { padding:.4rem .6rem; border:1px solid #bbb; border-radius:4px; }
+.filters button, .availability-form button, .writer-form button, .password-gate button { padding:.45rem 1.1rem; border:none; background:#20232a; color:#fff; border-radius:4px; cursor:pointer; }
+.filters button:hover, .availability-form button:hover, .writer-form button:hover, .password-gate button:hover { background:#111; }
+.directory-table, .writer-table, .availability-table, .metrics { box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.availability-status { white-space:nowrap; }
+.availability-table ul { margin:0; padding-left:1.1rem; }
+.availability-table li { margin:.2rem 0; }
+.reports-grid { display:grid; grid-template-columns:280px 1fr; gap:1.5rem; }
+.event-list ul { list-style:none; padding:0; margin:0; }
+.event-list li { margin-bottom:.5rem; border:1px solid #ddd; border-radius:6px; background:#fff; }
+.event-list li.active { border-color:#1d4ed8; box-shadow:0 0 0 2px rgba(29,78,216,0.15); }
+.event-list a { display:block; padding:.6rem .75rem; color:#111; text-decoration:none; }
+.event-counts { display:block; font-size:.85rem; color:#555; margin-top:.25rem; }
+.ms-card { background:#fff; border:1px solid #ddd; border-radius:6px; padding:.75rem; margin-bottom:1rem; display:flex; gap:1.5rem; flex-wrap:wrap; }
+.ms-card h5 { margin:0 0 .5rem 0; }
+.status-column ul { list-style:none; padding:0; margin:0; }
+.status-column li { margin:.2rem 0; }
+.status-column.present h6 { color:#1b7f3d; }
+.status-column.ftr h6 { color:#b91c1c; }
+.status-column.excused h6 { color:#b8860b; }
+.cadet-profile .counts { display:flex; gap:1rem; margin:1rem 0; }
+.count-card { flex:1; text-align:center; background:#fff; border-radius:6px; border:1px solid #ddd; padding:.75rem; box-shadow:0 1px 2px rgba(0,0,0,.05); }
+.count-card.present strong { color:#1b7f3d; }
+.count-card.ftr strong { color:#b91c1c; }
+.count-card.excused strong { color:#b8860b; }
+.status-present { background:#f1fdf5; }
+.status-ftr { background:#fff0f0; }
+.status-excused { background:#fff9e6; }
+.status-buttons { display:flex; gap:.5rem; }
+.status-btn { padding:.35rem .75rem; border:1px solid #bbb; border-radius:4px; background:#fff; cursor:pointer; }
+.status-btn.active { background:#1d4ed8; color:#fff; border-color:#1d4ed8; }
+.writer-table td { vertical-align:middle; }
+.writer-table input[type="text"] { width:100%; }
+.writer-table tbody tr:nth-child(even) { background:#f9f9f9; }
+.password-gate { max-width:360px; margin:2rem auto; background:#fff; padding:1.5rem; border-radius:6px; border:1px solid #ddd; box-shadow:0 2px 6px rgba(0,0,0,.08); }
+.password-gate form { display:flex; flex-direction:column; gap:.75rem; }
+.waterfall-table code { margin-right:.35rem; }
+.reports-grid { margin-top:1rem; }
+.event-detail .metrics { max-width:320px; }
+.availability-table, .writer-table { background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+.link-button:hover { text-decoration:underline; }

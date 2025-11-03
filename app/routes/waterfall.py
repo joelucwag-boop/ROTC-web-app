@@ -1,15 +1,19 @@
-from flask import Blueprint, render_template, current_app
+from flask import Blueprint, current_app, render_template
+
+from ..utils.sheet_cache import get_cached_data
 
 bp = Blueprint("waterfall", __name__, url_prefix="/waterfall")
+
 
 @bp.route("/")
 def waterfall():
     app = current_app
-    app.logger.debug("Waterfall matrix requested.")
-    # This is stubbed — would pull positions from the UMR tab.
-    matrix = [
-        {"position": "Battalion Commander", "name": "Cadet Smith"},
-        {"position": "XO", "name": "Cadet Johnson"},
-        {"position": "S3", "name": "Cadet Lee"},
-    ]
+    app.logger.debug("Waterfall matrix requested")
+    try:
+        data = get_cached_data(app, "umr")
+    except Exception:
+        app.logger.exception("Failed to load UMR cache for waterfall matrix")
+        data = {}
+    matrix = data.get("entries", [])
+    app.logger.debug("Waterfall matrix loaded with %d entries", len(matrix))
     return render_template("waterfall.html", matrix=matrix)
