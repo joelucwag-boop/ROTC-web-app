@@ -1,6 +1,6 @@
 # app/__init__.py
 import os, logging, pkgutil, importlib, inspect
-from flask import Flask, redirect
+from flask import Flask, redirect, url_for
 from .config import Config
 from .utils.logger import init_logging
 from .utils.sheet_cache import init_cache_scheduler
@@ -92,6 +92,14 @@ def create_app():
             if endpoint not in app.view_functions:
                 continue
             try:
+                href = url_for(endpoint)
+            except Exception:
+                app.logger.warning(
+                    "Navigation link could not be generated",
+                    extra={"endpoint": endpoint},
+                )
+                continue
+            available.append({"label": label, "endpoint": endpoint, "href": href})
                 available.append({"label": label, "endpoint": endpoint})
             except Exception:
                 app.logger.debug(

@@ -12,6 +12,7 @@
 <!-- app/templates/base.html (example) -->
       <nav>
         {% for link in nav_links %}
+          <a href="{{ link.href }}">{{ link.label }}</a>
           <a href="{{ url_for(link.endpoint) }}">{{ link.label }}</a>
         {% endfor %}
       </nav>

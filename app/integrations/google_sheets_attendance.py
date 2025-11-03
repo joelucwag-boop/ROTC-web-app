@@ -112,6 +112,8 @@ def _open_ws(cfg: SheetConfig) -> gspread.Worksheet:
     return ws
 
 
+
+
 # ---------------------------------------------------------------------------
 # DataFrame helpers (ported from the original scripts)
 # ---------------------------------------------------------------------------
